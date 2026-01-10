@@ -6,6 +6,7 @@ export interface Scene {
   visualPrompt: string;
   assetType: 'image' | 'video';
   assetUrl?: string;
+  kieTaskId?: string; // KIE AI task ID for video generation
   isGenerating?: boolean;
 }
 

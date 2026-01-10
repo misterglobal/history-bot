@@ -23,9 +23,126 @@ const App: React.FC = () => {
   const [masterVideoUrl, setMasterVideoUrl] = useState<string | null>(null);
   const [masterProgressMsg, setMasterProgressMsg] = useState('');
 
+  // Load saved progress on mount
   useEffect(() => {
     checkApiKey(true);
+    loadSavedProgress();
   }, []);
+
+  // Save progress whenever script or scenes change
+  useEffect(() => {
+    if (script) {
+      saveProgress();
+    }
+  }, [script]);
+
+  const saveProgress = () => {
+    if (!script) return;
+    
+    const progressData = {
+      topic,
+      script,
+      researchData,
+      timestamp: new Date().toISOString()
+    };
+    
+    try {
+      localStorage.setItem('histori_bot_progress', JSON.stringify(progressData));
+      console.log('Progress saved');
+    } catch (error) {
+      console.warn('Failed to save progress:', error);
+    }
+  };
+
+  const loadSavedProgress = () => {
+    try {
+      const saved = localStorage.getItem('histori_bot_progress');
+      if (saved) {
+        const progressData = JSON.parse(saved);
+        const { topic, script, researchData } = progressData;
+        
+        // Check if progress is recent (within last 7 days)
+        const savedTime = new Date(progressData.timestamp);
+        const daysSince = (Date.now() - savedTime.getTime()) / (1000 * 60 * 60 * 24);
+        
+        if (daysSince > 7) {
+          // Progress is too old, clear it
+          localStorage.removeItem('histori_bot_progress');
+          return;
+        }
+        
+        // Restore progress
+        setTopic(topic || '');
+        setScript(script);
+        setResearchData(researchData);
+        
+        // Restore videos from KIE AI task IDs if URLs are missing
+        if (script) {
+          const scenesWithTaskIds = script.scenes.filter(s => s.kieTaskId && (!s.assetUrl || s.assetType === 'video'));
+          
+          if (scenesWithTaskIds.length > 0) {
+            console.log(`Restoring ${scenesWithTaskIds.length} videos from KIE AI task IDs...`);
+            
+            // Fetch videos for scenes with taskIds but no URLs
+            Promise.all(
+              scenesWithTaskIds.map(async (scene) => {
+                if (!scene.kieTaskId) return;
+                
+                try {
+                  const videoUrl = await gemini.getVideoFromTaskId(scene.kieTaskId);
+                  const sceneIndex = script.scenes.findIndex(s => s.id === scene.id);
+                  if (sceneIndex !== -1) {
+                    const updatedScenes = [...script.scenes];
+                    updatedScenes[sceneIndex].assetUrl = videoUrl;
+                    setScript({ ...script, scenes: updatedScenes });
+                  }
+                } catch (error: any) {
+                  console.warn(`Failed to restore video for scene ${scene.id}:`, error.message);
+                  // Video might still be processing, that's okay
+                }
+              })
+            ).then(() => {
+              console.log('Video restoration complete');
+            });
+          }
+        }
+        
+        // Set step based on what's available
+        if (script && script.scenes.some(s => s.assetUrl && s.assetType === 'video')) {
+          setCurrentStep(AppState.ASSET_GEN);
+        } else if (script) {
+          setCurrentStep(AppState.ASSET_GEN);
+        } else if (researchData) {
+          setCurrentStep(AppState.RESEARCHING);
+        }
+        
+        const scenesWithVideos = script?.scenes.filter(s => s.assetUrl && s.assetType === 'video').length || 0;
+        const scenesWithTaskIds = script?.scenes.filter(s => s.kieTaskId && s.assetType === 'video').length || 0;
+        const totalScenes = script?.scenes.length || 0;
+        
+        console.log('Progress loaded:', {
+          topic,
+          scenesWithVideos,
+          scenesWithTaskIds,
+          totalScenes
+        });
+        
+        // Show notification if videos were restored
+        if (scenesWithVideos > 0 || scenesWithTaskIds > 0) {
+          setTimeout(() => {
+            setError(null); // Clear any errors
+          }, 100);
+        }
+      }
+    } catch (error) {
+      console.warn('Failed to load saved progress:', error);
+      localStorage.removeItem('histori_bot_progress');
+    }
+  };
+
+  const clearSavedProgress = () => {
+    localStorage.removeItem('histori_bot_progress');
+  };
 
   const saveSettings = () => {
     localStorage.setItem('FAL_API_KEY', falKey);
@@ -95,10 +212,11 @@ const App: React.FC = () => {
         const url = await gemini.generateImage(newScenes[sceneIndex].visualPrompt);
         newScenes[sceneIndex].assetUrl = url;
       } else {
-        const url = await gemini.generateVideo(newScenes[sceneIndex].visualPrompt, (msg) => {
+        const result = await gemini.generateVideo(newScenes[sceneIndex].visualPrompt, (msg) => {
           setVideoProgress(prev => ({ ...prev, [sceneId]: msg }));
         });
-        newScenes[sceneIndex].assetUrl = url;
+        newScenes[sceneIndex].assetUrl = result.url;
+        newScenes[sceneIndex].kieTaskId = result.taskId;
       }
     } catch (err: any) {
       if (err.message === "API_KEY_EXPIRED") {
@@ -151,6 +269,7 @@ const App: React.FC = () => {
     setIsRenderingMaster(false);
     setCurrentStep(AppState.IDLE);
     setError(null);
+    clearSavedProgress();
   };
 
   return (
@@ -202,8 +321,22 @@ const App: React.FC = () => {
                   <h3 className="font-bold flex items-center gap-2">
                     <span className="w-2 h-2 rounded-full bg-yellow-500 shadow-[0_0_8px_rgba(234,179,8,0.5)]"></span>
                     Storyboard
+                    {script.scenes.some(s => s.assetUrl && s.assetType === 'video') && (
+                      <span className="text-xs bg-green-500/20 text-green-400 px-2 py-0.5 rounded ml-2" title="Progress auto-saved">
+                        💾 Saved
+                      </span>
+                    )}
                   </h3>
-                  <button onClick={handleReset} className="text-xs text-zinc-500 hover:text-white uppercase tracking-tighter transition">Restart</button>
+                  <div className="flex gap-2">
+                    <button 
+                      onClick={saveProgress} 
+                      className="text-xs text-zinc-500 hover:text-yellow-500 uppercase tracking-tighter transition"
+                      title="Manually save progress"
+                    >
+                      Save
+                    </button>
+                    <button onClick={handleReset} className="text-xs text-zinc-500 hover:text-white uppercase tracking-tighter transition">Restart</button>
+                  </div>
                 </div>
                 
                 <div className="p-6 space-y-8 h-[75vh] overflow-y-auto custom-scrollbar">
@@ -313,7 +446,44 @@ const App: React.FC = () => {
               </div>
 
               <div className="grid grid-cols-2 gap-4">
-                <button onClick={() => { const a = document.createElement('a'); a.href = masterVideoUrl; a.download = `histori-bot-${topic.toLowerCase().replace(/\s/g, '-')}.mp4`; a.click(); }} className="bg-yellow-500 text-zinc-950 font-bold py-4 rounded-2xl hover:bg-yellow-400 transition flex items-center justify-center gap-2">
+                <button 
+                  onClick={async () => {
+                    try {
+                      setError(null);
+                      // Try direct download first (works for public URLs)
+                      const a = document.createElement('a');
+                      a.href = masterVideoUrl;
+                      a.download = `histori-bot-${topic.toLowerCase().replace(/\s/g, '-')}.mp4`;
+                      a.target = '_blank';
+                      a.click();
+                      
+                      // If direct download doesn't work, fetch and create blob URL
+                      // This handles CORS-protected URLs
+                      setTimeout(async () => {
+                        try {
+                          const response = await fetch(masterVideoUrl);
+                          if (response.ok) {
+                            const blob = await response.blob();
+                            const blobUrl = URL.createObjectURL(blob);
+                            const downloadLink = document.createElement('a');
+                            downloadLink.href = blobUrl;
+                            downloadLink.download = `histori-bot-${topic.toLowerCase().replace(/\s/g, '-')}.mp4`;
+                            document.body.appendChild(downloadLink);
+                            downloadLink.click();
+                            document.body.removeChild(downloadLink);
+                            URL.revokeObjectURL(blobUrl);
+                          }
+                        } catch (fetchError) {
+                          // If fetch fails, the direct link should still work
+                          console.warn('Blob download fallback failed, using direct link:', fetchError);
+                        }
+                      }, 100);
+                    } catch (err: any) {
+                      setError(`Download failed: ${err.message}`);
+                    }
+                  }}
+                  className="bg-yellow-500 text-zinc-950 font-bold py-4 rounded-2xl hover:bg-yellow-400 transition flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
                   <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
                   DOWNLOAD MP4
                 </button>
