@@ -1,0 +1,8 @@
+{
+  "name": "Histori-Bot v1.0",
+  "description": "An automated AI content engine for generating high-retention, humorous historical videos using Gemini and Veo.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
