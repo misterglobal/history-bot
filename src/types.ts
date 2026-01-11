@@ -1,0 +1,42 @@
+export interface Scene {
+  id: string;
+  timestamp: string;
+  text: string;
+  visualPrompt: string;
+  assetType: 'image' | 'video';
+  assetUrl?: string;
+  kieTaskId?: string; // KIE AI task ID for video generation
+  isGenerating?: boolean;
+}
+
+export interface VideoScript {
+  topic: string;
+  hook: string;
+  body: string;
+  outro: string;
+  scenes: Scene[];
+}
+
+export enum AppState {
+  IDLE = 'IDLE',
+  RESEARCHING = 'RESEARCHING',
+  SCRIPTING = 'SCRIPTING',
+  ASSET_GEN = 'ASSET_GEN',
+  PREVIEW = 'PREVIEW'
+}
+
+export interface Fact {
+  title: string;
+  content: string;
+  sourceUrl?: string;
+}
+
+export interface ProjectData {
+  id: string;
+  topic: string;
+  script: VideoScript | null;
+  researchData: { facts: Fact[], groundingSources: any[] } | null;
+  masterVideoUrl: string | null;
+  timestamp: string;
+  createdAt: string;
+}
