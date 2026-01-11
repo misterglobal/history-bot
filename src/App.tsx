@@ -19,11 +19,17 @@ const App: React.FC = () => {
   // Settings & Config
   const [showSettings, setShowSettings] = useState(false);
   const [falKey, setFalKey] = useState(localStorage.getItem('FAL_API_KEY') || '');
+  const [geminiKey, setGeminiKey] = useState(localStorage.getItem('GEMINI_API_KEY') || '');
+  const [kieKey, setKieKey] = useState(localStorage.getItem('KIEAI_API_KEY') || '');
   
   // Master Render States
   const [isRenderingMaster, setIsRenderingMaster] = useState(false);
   const [masterVideoUrl, setMasterVideoUrl] = useState<string | null>(null);
   const [masterProgressMsg, setMasterProgressMsg] = useState('');
+
+  // Env check helpers
+  const envGemini = process.env.GEMINI_API_KEY || process.env.API_KEY;
+  const envKie = process.env.KIEAI_API_KEY;
 
   // Load saved progress on mount
   useEffect(() => {
@@ -104,7 +110,7 @@ const App: React.FC = () => {
         if (!scene.kieTaskId) return;
         
         try {
-          const videoUrl = await gemini.getVideoFromTaskId(scene.kieTaskId);
+          const videoUrl = await gemini.getVideoFromTaskId(scene.kieTaskId, undefined, kieKey);
           setScript(prev => {
             if (!prev) return null;
             const sceneIndex = prev.scenes.findIndex(s => s.id === scene.id);
@@ -135,10 +141,9 @@ const App: React.FC = () => {
     setTopic(item.topic);
     setScript(item.script);
     setMasterVideoUrl(item.masterVideoUrl);
-    setResearchData(null); // Archives don't store raw research data usually
+    setResearchData(null); 
     setCurrentStep(AppState.ASSET_GEN);
     
-    // If videos need restoration (e.g. URLs expired but we have taskIds)
     if (item.script) {
         const scenesWithTaskIds = item.script.scenes.filter((s: Scene) => s.kieTaskId && !s.assetUrl);
         if (scenesWithTaskIds.length > 0) {
@@ -149,7 +154,7 @@ const App: React.FC = () => {
 
   const handleDeleteArchive = (id: string) => {
     archiveService.deleteArchive(id);
-    loadArchives(); // Refresh list
+    loadArchives();
   };
 
   const clearSavedProgress = () => {
@@ -158,6 +163,8 @@ const App: React.FC = () => {
 
   const saveSettings = () => {
     localStorage.setItem('FAL_API_KEY', falKey);
+    localStorage.setItem('GEMINI_API_KEY', geminiKey);
+    localStorage.setItem('KIEAI_API_KEY', kieKey);
     setShowSettings(false);
   };
 
@@ -188,17 +195,21 @@ const App: React.FC = () => {
     setCurrentStep(AppState.RESEARCHING);
 
     try {
-      const result = await gemini.researchTopic(topic);
+      const result = await gemini.researchTopic(topic, geminiKey);
       setResearchData(result);
       setStatusMessage('Analyzing ironies and bizarre details...');
       
       const factsString = result.facts.map(f => f.content).join('\n');
-      const generatedScript = await gemini.generateScript(topic, factsString);
+      const generatedScript = await gemini.generateScript(topic, factsString, geminiKey);
       setScript(generatedScript);
       setCurrentStep(AppState.ASSET_GEN);
     } catch (err: any) {
       setError(err.message || 'Failed to generate content');
       setCurrentStep(AppState.IDLE);
+      // If error is about missing key, open settings
+      if (err.message?.includes("API Key is missing")) {
+        setShowSettings(true);
+      }
     } finally {
       setLoading(false);
     }
@@ -221,7 +232,7 @@ const App: React.FC = () => {
 
     try {
       if (type === 'image') {
-        const url = await gemini.generateImage(newScenes[sceneIndex].visualPrompt);
+        const url = await gemini.generateImage(newScenes[sceneIndex].visualPrompt, geminiKey);
         newScenes[sceneIndex].assetUrl = url;
       } else {
         const scene = newScenes[sceneIndex];
@@ -234,7 +245,8 @@ const App: React.FC = () => {
             sceneText: scene.text,
             topic: script.topic,
             timestamp: scene.timestamp
-          }
+          },
+          kieKey
         );
         newScenes[sceneIndex].assetUrl = result.url;
         newScenes[sceneIndex].kieTaskId = result.taskId;
@@ -245,6 +257,9 @@ const App: React.FC = () => {
         await handleOpenKeyPicker();
       } else {
         setError(`Failed to generate asset: ${err.message}`);
+        if (err.message?.includes("API Key is missing")) {
+            setShowSettings(true);
+        }
       }
     } finally {
       newScenes[sceneIndex].isGenerating = false;
@@ -271,12 +286,14 @@ const App: React.FC = () => {
     setMasterProgressMsg("Orchestrating Historical Chaos...");
 
     try {
-      const response = await gemini.generateMasterVideo(script, falKey, (msg) => {
-        setMasterProgressMsg(msg);
-      });
+      const response = await gemini.generateMasterVideo(
+        script, 
+        falKey, 
+        (msg) => setMasterProgressMsg(msg),
+        kieKey
+      );
       setMasterVideoUrl(response.url);
       
-      // Auto-save to archives on success
       try {
         archiveService.saveArchive(topic, script, response.url);
         console.log('Project automatically archived.');
@@ -286,6 +303,9 @@ const App: React.FC = () => {
       
     } catch (err: any) {
       setError(`Master render failed: ${err.message}`);
+      if (err.message?.includes("API Key is missing")) {
+        setShowSettings(true);
+      }
     } finally {
       setIsRenderingMaster(false);
     }
@@ -295,7 +315,6 @@ const App: React.FC = () => {
       if (!script) return;
       try {
           archiveService.saveArchive(topic, script, masterVideoUrl);
-          // Show a little toast or alert? using error state for now to be simple
           const originalError = error;
           setError("Project saved to Archives!");
           setTimeout(() => setError(originalError), 3000);
@@ -557,13 +576,40 @@ const App: React.FC = () => {
                Engine Configuration
             </h3>
             
-            <div className="space-y-4">
+            <div className="space-y-6">
+              {/* Gemini API Key */}
               <div>
-                <label className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold block mb-2">FAL.AI API KEY</label>
-                <p className="text-[10px] text-zinc-500 mb-2 leading-relaxed">Required for stitching multiple scenes using FFmpeg. Get one at <a href="https://fal.ai" target="_blank" className="text-yellow-500 hover:underline">fal.ai</a>.</p>
+                <label className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold block mb-2">Google Gemini API Key</label>
+                <p className="text-[10px] text-zinc-500 mb-2">Required for research, scripting, and image generation. {envGemini ? <span className="text-green-500 font-bold">(Present in .env)</span> : <span className="text-yellow-500 font-bold">(Missing in .env)</span>}</p>
                 <input 
                   type="password"
-                  placeholder="Paste your fal.ai key here"
+                  placeholder="Paste your Gemini API key"
+                  className="w-full bg-zinc-950 border border-white/10 rounded-xl px-4 py-3 text-sm focus:border-yellow-500 outline-none transition"
+                  value={geminiKey}
+                  onChange={(e) => setGeminiKey(e.target.value)}
+                />
+              </div>
+
+              {/* KIE AI API Key */}
+              <div>
+                <label className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold block mb-2">KIE AI API Key (Veo 3.1)</label>
+                <p className="text-[10px] text-zinc-500 mb-2">Required for Veo video generation. {envKie ? <span className="text-green-500 font-bold">(Present in .env)</span> : <span className="text-yellow-500 font-bold">(Missing in .env)</span>}</p>
+                <input 
+                  type="password"
+                  placeholder="Paste your KIE AI key"
+                  className="w-full bg-zinc-950 border border-white/10 rounded-xl px-4 py-3 text-sm focus:border-yellow-500 outline-none transition"
+                  value={kieKey}
+                  onChange={(e) => setKieKey(e.target.value)}
+                />
+              </div>
+
+              {/* Fal.ai API Key */}
+              <div>
+                <label className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold block mb-2">Fal.ai API Key (FFmpeg)</label>
+                <p className="text-[10px] text-zinc-500 mb-2">Required for stitching videos.</p>
+                <input 
+                  type="password"
+                  placeholder="Paste your fal.ai key"
                   className="w-full bg-zinc-950 border border-white/10 rounded-xl px-4 py-3 text-sm focus:border-yellow-500 outline-none transition"
                   value={falKey}
                   onChange={(e) => setFalKey(e.target.value)}

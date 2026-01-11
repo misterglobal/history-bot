@@ -23,8 +23,13 @@ const Header: React.FC<HeaderProps> = ({ onOpenSettings, onOpenArchives }) => {
         </button>
       </nav>
       <div className="flex items-center gap-4">
-        <span className="text-xs bg-zinc-800 px-2 py-1 rounded text-zinc-400 font-mono">v1.2.0</span>
-        <button onClick={onOpenSettings} className="w-8 h-8 rounded-full bg-zinc-800 border border-white/10 flex items-center justify-center hover:bg-zinc-700 transition">
+        <span className="text-xs bg-zinc-800 px-2 py-1 rounded text-zinc-400 font-mono">v1.2.1</span>
+        <button onClick={onOpenArchives} className="md:hidden w-8 h-8 rounded-full bg-zinc-800 border border-white/10 flex items-center justify-center hover:bg-zinc-700 transition" title="Archives">
+            <svg className="w-4 h-4 text-zinc-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
+            </svg>
+        </button>
+        <button onClick={onOpenSettings} className="w-8 h-8 rounded-full bg-zinc-800 border border-white/10 flex items-center justify-center hover:bg-zinc-700 transition" title="Settings">
            <svg className="w-4 h-4 text-zinc-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" /></svg>
         </button>
       </div>
