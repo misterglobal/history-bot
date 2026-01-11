@@ -3,9 +3,10 @@ import React from 'react';
 interface HeaderProps {
   onOpenSettings: () => void;
   onOpenArchives: () => void;
+  onNewProject: () => void;
 }
 
-const Header: React.FC<HeaderProps> = ({ onOpenSettings, onOpenArchives }) => {
+const Header: React.FC<HeaderProps> = ({ onOpenSettings, onOpenArchives, onNewProject }) => {
   return (
     <header className="border-b border-white/10 py-4 px-6 flex justify-between items-center bg-black/50 backdrop-blur-md sticky top-0 z-50">
       <div className="flex items-center gap-2">
@@ -13,7 +14,7 @@ const Header: React.FC<HeaderProps> = ({ onOpenSettings, onOpenArchives }) => {
         <h1 className="text-xl font-bold tracking-tight">HISTORI<span className="text-yellow-500">-BOT</span></h1>
       </div>
       <nav className="hidden md:flex gap-6 text-sm font-medium text-zinc-400">
-        <button onClick={() => window.location.reload()} className="hover:text-white transition">New Project</button>
+        <button onClick={onNewProject} className="hover:text-white transition">New Project</button>
         <button onClick={onOpenArchives} className="hover:text-white transition flex items-center gap-1">
           Archives
         </button>
@@ -23,7 +24,7 @@ const Header: React.FC<HeaderProps> = ({ onOpenSettings, onOpenArchives }) => {
         </button>
       </nav>
       <div className="flex items-center gap-4">
-        <span className="text-xs bg-zinc-800 px-2 py-1 rounded text-zinc-400 font-mono">v1.2.0</span>
+        <span className="text-xs bg-zinc-800 px-2 py-1 rounded text-zinc-400 font-mono">v1.2.1</span>
         <button onClick={onOpenSettings} className="w-8 h-8 rounded-full bg-zinc-800 border border-white/10 flex items-center justify-center hover:bg-zinc-700 transition">
            <svg className="w-4 h-4 text-zinc-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" /></svg>
         </button>

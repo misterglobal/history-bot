@@ -28,6 +28,7 @@ const App: React.FC = () => {
   // Env presence check
   const envHasGemini = !!process.env.GEMINI_API_KEY;
   const envHasKie = !!process.env.KIEAI_API_KEY;
+  const envHasFal = !!process.env.FAL_API_KEY;
   
   // Master Render States
   const [isRenderingMaster, setIsRenderingMaster] = useState(false);
@@ -249,7 +250,10 @@ const App: React.FC = () => {
 
   const handleFullRender = async () => {
     if (!script) return;
-    if (!falKey) {
+    
+    const effectiveFalKey = falKey || process.env.FAL_API_KEY;
+    
+    if (!effectiveFalKey) {
       setError("Please enter your fal.ai API key in Settings before rendering.");
       setShowSettings(true);
       return;
@@ -260,7 +264,7 @@ const App: React.FC = () => {
     setMasterProgressMsg("Orchestrating Historical Chaos...");
 
     try {
-      const response = await gemini.generateMasterVideo(script, falKey, (msg) => {
+      const response = await gemini.generateMasterVideo(script, effectiveFalKey, (msg) => {
         setMasterProgressMsg(msg);
       });
       setMasterVideoUrl(response.url);
@@ -287,6 +291,7 @@ const App: React.FC = () => {
       <Header 
         onOpenSettings={() => setShowSettings(true)} 
         onOpenArchives={() => setShowArchives(true)}
+        onNewProject={handleReset}
       />
       
       <main className="max-w-7xl mx-auto px-6 py-8">
@@ -326,7 +331,6 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {/* ... (Middle sections kept same for brevity, main logic update is in Modals below) ... */}
         {currentStep !== AppState.IDLE && script && !masterVideoUrl && (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 animate-in fade-in duration-500">
             <div className="lg:col-span-4 space-y-6">
@@ -548,11 +552,16 @@ const App: React.FC = () => {
               </div>
 
               <div>
-                <label className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold block mb-2">FAL.AI API KEY</label>
+                <div className="flex justify-between items-center mb-2">
+                    <label className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold">FAL.AI API KEY</label>
+                    <span className={`text-[10px] px-2 py-0.5 rounded ${envHasFal ? 'bg-green-500/10 text-green-400' : 'bg-red-500/10 text-red-400'}`}>
+                        {envHasFal ? 'ENV DETECTED' : 'ENV MISSING'}
+                    </span>
+                </div>
                 <p className="text-[10px] text-zinc-500 mb-2 leading-relaxed">Required for stitching multiple scenes using FFmpeg. Get one at <a href="https://fal.ai" target="_blank" className="text-yellow-500 hover:underline">fal.ai</a>.</p>
                 <input 
                   type="password"
-                  placeholder="Paste your fal.ai key here"
+                  placeholder={envHasFal ? "Using env key (enter to override)" : "Paste your fal.ai key here"}
                   className="w-full bg-zinc-950 border border-white/10 rounded-xl px-4 py-3 text-sm focus:border-yellow-500 outline-none transition"
                   value={falKey}
                   onChange={(e) => setFalKey(e.target.value)}
