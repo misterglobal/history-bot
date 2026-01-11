@@ -117,7 +117,11 @@ export const getVideoFromTaskId = async (taskId: string, onProgress?: (msg: stri
   }
 };
 
-export const generateVideo = async (prompt: string, onProgress?: (msg: string) => void): Promise<{ url: string; taskId: string }> => {
+export const generateVideo = async (
+  prompt: string, 
+  onProgress?: (msg: string) => void,
+  context?: { sceneText?: string; topic?: string; timestamp?: string }
+): Promise<{ url: string; taskId: string }> => {
   const apiKey = process.env.KIEAI_API_KEY;
   if (!apiKey) {
     throw new Error("KIEAI_API_KEY is required. Please set it in your .env.local file.");
@@ -125,8 +129,20 @@ export const generateVideo = async (prompt: string, onProgress?: (msg: string) =
 
   onProgress?.("Initiating scene generation with KIE AI...");
   
-  // Enhanced prompt for historical content
-  const enhancedPrompt = `${prompt}. Cinematic style, high motion, dynamic historical recreation.`;
+  // Enhanced prompt for historical content with educational context
+  let enhancedPrompt = prompt;
+  
+  // Add context to help align video with storyboard
+  if (context?.sceneText) {
+    enhancedPrompt += ` This scene illustrates: "${context.sceneText}".`;
+  }
+  
+  if (context?.topic) {
+    enhancedPrompt += ` Historical topic: ${context.topic}.`;
+  }
+  
+  // Add video-specific enhancements
+  enhancedPrompt += ` Cinematic historical recreation, period-accurate details, dynamic camera movement, high motion, educational and informative visual storytelling. Characters and actions must clearly convey the historical narrative.`;
   
   try {
     // Step 1: Submit video generation request
@@ -139,7 +155,6 @@ export const generateVideo = async (prompt: string, onProgress?: (msg: string) =
       body: JSON.stringify({
         prompt: enhancedPrompt,
         model: "veo3_fast",
-        watermark: "PP",
         aspectRatio: "9:16",
         enableFallback: false,
         enableTranslation: true,
@@ -491,9 +506,18 @@ export const generateMasterVideo = async (
         });
       } else {
         onProgress?.(`Rendering Scene ${i + 1}: ${scene.text.substring(0, 30)}...`);
-        const result = await generateVideo(scene.visualPrompt, (msg) => {
-          onProgress?.(`Scene ${i + 1}: ${msg}`);
-        });
+        // Pass context to help align video with storyboard
+        const result = await generateVideo(
+          scene.visualPrompt, 
+          (msg) => {
+            onProgress?.(`Scene ${i + 1}: ${msg}`);
+          },
+          {
+            sceneText: scene.text,
+            topic: script.topic,
+            timestamp: scene.timestamp
+          }
+        );
         sceneVideoUrl = result.url;
         // Note: taskId is already stored in scene.kieTaskId from App.tsx
       }

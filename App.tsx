@@ -212,9 +212,18 @@ const App: React.FC = () => {
         const url = await gemini.generateImage(newScenes[sceneIndex].visualPrompt);
         newScenes[sceneIndex].assetUrl = url;
       } else {
-        const result = await gemini.generateVideo(newScenes[sceneIndex].visualPrompt, (msg) => {
-          setVideoProgress(prev => ({ ...prev, [sceneId]: msg }));
-        });
+        const scene = newScenes[sceneIndex];
+        const result = await gemini.generateVideo(
+          scene.visualPrompt, 
+          (msg) => {
+            setVideoProgress(prev => ({ ...prev, [sceneId]: msg }));
+          },
+          {
+            sceneText: scene.text,
+            topic: script.topic,
+            timestamp: scene.timestamp
+          }
+        );
         newScenes[sceneIndex].assetUrl = result.url;
         newScenes[sceneIndex].kieTaskId = result.taskId;
       }
