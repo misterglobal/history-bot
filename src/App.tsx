@@ -19,7 +19,15 @@ const App: React.FC = () => {
   // Settings & Config
   const [showSettings, setShowSettings] = useState(false);
   const [showArchives, setShowArchives] = useState(false);
+  
+  // API Keys
   const [falKey, setFalKey] = useState(localStorage.getItem('FAL_API_KEY') || '');
+  const [geminiKey, setGeminiKey] = useState(localStorage.getItem('GEMINI_API_KEY') || '');
+  const [kieKey, setKieKey] = useState(localStorage.getItem('KIEAI_API_KEY') || '');
+  
+  // Env presence check
+  const envHasGemini = !!process.env.GEMINI_API_KEY;
+  const envHasKie = !!process.env.KIEAI_API_KEY;
   
   // Master Render States
   const [isRenderingMaster, setIsRenderingMaster] = useState(false);
@@ -31,6 +39,11 @@ const App: React.FC = () => {
 
   // Load latest project on mount
   useEffect(() => {
+    // Only auto-open if absolutely no keys are found
+    if (!envHasGemini && !geminiKey) {
+        // Optional: could prompt user immediately
+    }
+    
     checkApiKey(true);
     const archives = storage.getArchives();
     if (archives.length > 0) {
@@ -63,10 +76,9 @@ const App: React.FC = () => {
       researchData,
       masterVideoUrl,
       timestamp: new Date().toISOString(),
-      createdAt: new Date().toISOString() // In a real app we'd preserve the original created date
+      createdAt: new Date().toISOString()
     };
     
-    // If we're updating an existing archive, preserve its createdAt
     const existing = storage.getArchive(projectId);
     if (existing) {
       projectData.createdAt = existing.createdAt;
@@ -87,7 +99,6 @@ const App: React.FC = () => {
     setResearchData(project.researchData);
     setMasterVideoUrl(project.masterVideoUrl);
     
-    // Restore state logic
     if (project.masterVideoUrl) {
       setCurrentStep(AppState.ASSET_GEN);
     } else if (project.script && project.script.scenes.some(s => s.assetUrl && s.assetType === 'video')) {
@@ -106,7 +117,6 @@ const App: React.FC = () => {
 
   const handleDeleteArchive = (id: string) => {
     storage.deleteArchive(id);
-    // If we deleted the current project, reset
     if (id === projectId) {
       handleReset();
     }
@@ -114,6 +124,8 @@ const App: React.FC = () => {
 
   const saveSettings = () => {
     localStorage.setItem('FAL_API_KEY', falKey);
+    localStorage.setItem('GEMINI_API_KEY', geminiKey);
+    localStorage.setItem('KIEAI_API_KEY', kieKey);
     setShowSettings(false);
   };
 
@@ -138,7 +150,13 @@ const App: React.FC = () => {
     e.preventDefault();
     if (!topic) return;
     
-    // Start a fresh project ID if we were idle or explicit reset
+    // Check if keys are present
+    if (!geminiKey && !envHasGemini) {
+      setError("Missing Gemini API Key. Please add it in Settings.");
+      setShowSettings(true);
+      return;
+    }
+
     if (currentStep === AppState.IDLE) {
       setProjectId(crypto.randomUUID());
     }
@@ -171,8 +189,19 @@ const App: React.FC = () => {
     const sceneIndex = script.scenes.findIndex(s => s.id === sceneId);
     if (sceneIndex === -1) return;
 
-    if (type === 'video') {
-      await checkApiKey();
+    // Check keys
+    if (type === 'image') {
+       if (!geminiKey && !envHasGemini) {
+         setError("Missing Gemini API Key. Please add it in Settings.");
+         setShowSettings(true);
+         return;
+       }
+    } else if (type === 'video') {
+       if (!kieKey && !envHasKie) {
+         setError("Missing KIE AI API Key. Please add it in Settings.");
+         setShowSettings(true);
+         return;
+       }
     }
 
     const newScenes = [...script.scenes];
@@ -202,8 +231,8 @@ const App: React.FC = () => {
       }
     } catch (err: any) {
       if (err.message === "API_KEY_EXPIRED") {
-        setError("Gemini API key expired. Please select a key.");
-        await handleOpenKeyPicker();
+        setError("Gemini API key expired. Please update it in Settings.");
+        setShowSettings(true);
       } else {
         setError(`Failed to generate asset: ${err.message}`);
       }
@@ -226,7 +255,6 @@ const App: React.FC = () => {
       return;
     }
     
-    await checkApiKey();
     setIsRenderingMaster(true);
     setError(null);
     setMasterProgressMsg("Orchestrating Historical Chaos...");
@@ -298,6 +326,7 @@ const App: React.FC = () => {
           </div>
         )}
 
+        {/* ... (Middle sections kept same for brevity, main logic update is in Modals below) ... */}
         {currentStep !== AppState.IDLE && script && !masterVideoUrl && (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 animate-in fade-in duration-500">
             <div className="lg:col-span-4 space-y-6">
@@ -485,7 +514,39 @@ const App: React.FC = () => {
                Engine Configuration
             </h3>
             
-            <div className="space-y-4">
+            <div className="space-y-6">
+              <div>
+                <div className="flex justify-between items-center mb-2">
+                    <label className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold">Gemini API Key</label>
+                    <span className={`text-[10px] px-2 py-0.5 rounded ${envHasGemini ? 'bg-green-500/10 text-green-400' : 'bg-red-500/10 text-red-400'}`}>
+                        {envHasGemini ? 'ENV DETECTED' : 'ENV MISSING'}
+                    </span>
+                </div>
+                <input 
+                  type="password"
+                  placeholder={envHasGemini ? "Using env key (enter to override)" : "Required for text/image gen"}
+                  className="w-full bg-zinc-950 border border-white/10 rounded-xl px-4 py-3 text-sm focus:border-yellow-500 outline-none transition"
+                  value={geminiKey}
+                  onChange={(e) => setGeminiKey(e.target.value)}
+                />
+              </div>
+
+              <div>
+                <div className="flex justify-between items-center mb-2">
+                    <label className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold">KIE AI API Key</label>
+                    <span className={`text-[10px] px-2 py-0.5 rounded ${envHasKie ? 'bg-green-500/10 text-green-400' : 'bg-red-500/10 text-red-400'}`}>
+                        {envHasKie ? 'ENV DETECTED' : 'ENV MISSING'}
+                    </span>
+                </div>
+                <input 
+                  type="password"
+                  placeholder={envHasKie ? "Using env key (enter to override)" : "Required for video generation"}
+                  className="w-full bg-zinc-950 border border-white/10 rounded-xl px-4 py-3 text-sm focus:border-yellow-500 outline-none transition"
+                  value={kieKey}
+                  onChange={(e) => setKieKey(e.target.value)}
+                />
+              </div>
+
               <div>
                 <label className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold block mb-2">FAL.AI API KEY</label>
                 <p className="text-[10px] text-zinc-500 mb-2 leading-relaxed">Required for stitching multiple scenes using FFmpeg. Get one at <a href="https://fal.ai" target="_blank" className="text-yellow-500 hover:underline">fal.ai</a>.</p>
@@ -502,15 +563,15 @@ const App: React.FC = () => {
             <div className="mt-8 flex gap-3">
               <button 
                 onClick={saveSettings}
-                className="flex-1 bg-yellow-500 text-zinc-950 font-bold py-3 rounded-xl hover:bg-yellow-400 transition text-sm"
+                className="flex-1 bg-yellow-500 text-zinc-950 font-bold py-3 rounded-xl hover:bg-yellow-400 transition text-sm shadow-lg shadow-yellow-500/20"
               >
-                SAVE & CLOSE
+                SAVE CONFIG
               </button>
               <button 
                 onClick={() => setShowSettings(false)}
                 className="flex-1 bg-zinc-800 text-white font-bold py-3 rounded-xl hover:bg-zinc-700 transition text-sm"
               >
-                CANCEL
+                CLOSE
               </button>
             </div>
           </div>
