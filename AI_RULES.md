@@ -44,3 +44,4 @@
 ### 6. AI & Environment
 - Use `process.env.GEMINI_API_KEY` and other env vars as defined in `vite.config.ts`.
 - When modifying prompts, update them in `src/constants.ts`, not inside the service files.
+- Update application header version numbers.
