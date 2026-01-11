@@ -15,13 +15,13 @@ const App: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [videoProgress, setVideoProgress] = useState<Record<string, string>>({});
   const [archives, setArchives] = useState<ArchiveItem[]>([]);
-  
+
   // Settings & Config
   const [showSettings, setShowSettings] = useState(false);
   const [falKey, setFalKey] = useState(localStorage.getItem('FAL_API_KEY') || '');
   const [geminiKey, setGeminiKey] = useState(localStorage.getItem('GEMINI_API_KEY') || '');
   const [kieKey, setKieKey] = useState(localStorage.getItem('KIEAI_API_KEY') || '');
-  
+
   // Master Render States
   const [isRenderingMaster, setIsRenderingMaster] = useState(false);
   const [masterVideoUrl, setMasterVideoUrl] = useState<string | null>(null);
@@ -47,14 +47,14 @@ const App: React.FC = () => {
 
   const saveProgress = () => {
     if (!script) return;
-    
+
     const progressData = {
       topic,
       script,
       researchData,
       timestamp: new Date().toISOString()
     };
-    
+
     try {
       localStorage.setItem('histori_bot_progress', JSON.stringify(progressData));
     } catch (error) {
@@ -68,29 +68,29 @@ const App: React.FC = () => {
       if (saved) {
         const progressData = JSON.parse(saved);
         const { topic, script, researchData } = progressData;
-        
+
         // Check if progress is recent (within last 7 days)
         const savedTime = new Date(progressData.timestamp);
         const daysSince = (Date.now() - savedTime.getTime()) / (1000 * 60 * 60 * 24);
-        
+
         if (daysSince > 7) {
           localStorage.removeItem('histori_bot_progress');
           return;
         }
-        
+
         setTopic(topic || '');
         setScript(script);
         setResearchData(researchData);
-        
+
         // Restore videos from KIE AI task IDs if URLs are missing
         if (script) {
           const scenesWithTaskIds = script.scenes.filter((s: Scene) => s.kieTaskId && (!s.assetUrl || s.assetType === 'video'));
-          
+
           if (scenesWithTaskIds.length > 0) {
-             restoreVideos(script, scenesWithTaskIds);
+            restoreVideos(script, scenesWithTaskIds);
           }
         }
-        
+
         // Set step based on what's available
         if (script) {
           setCurrentStep(AppState.ASSET_GEN);
@@ -108,7 +108,7 @@ const App: React.FC = () => {
     Promise.all(
       scenes.map(async (scene) => {
         if (!scene.kieTaskId) return;
-        
+
         try {
           const videoUrl = await gemini.getVideoFromTaskId(scene.kieTaskId, undefined, kieKey);
           setScript(prev => {
@@ -141,14 +141,14 @@ const App: React.FC = () => {
     setTopic(item.topic);
     setScript(item.script);
     setMasterVideoUrl(item.masterVideoUrl);
-    setResearchData(null); 
+    setResearchData(null);
     setCurrentStep(AppState.ASSET_GEN);
-    
+
     if (item.script) {
-        const scenesWithTaskIds = item.script.scenes.filter((s: Scene) => s.kieTaskId && !s.assetUrl);
-        if (scenesWithTaskIds.length > 0) {
-            restoreVideos(item.script, scenesWithTaskIds);
-        }
+      const scenesWithTaskIds = item.script.scenes.filter((s: Scene) => s.kieTaskId && !s.assetUrl);
+      if (scenesWithTaskIds.length > 0) {
+        restoreVideos(item.script, scenesWithTaskIds);
+      }
     }
   };
 
@@ -188,7 +188,7 @@ const App: React.FC = () => {
   const handleResearch = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!topic) return;
-    
+
     setLoading(true);
     setStatusMessage('Searching historical archives...');
     setError(null);
@@ -198,7 +198,7 @@ const App: React.FC = () => {
       const result = await gemini.researchTopic(topic, geminiKey);
       setResearchData(result);
       setStatusMessage('Analyzing ironies and bizarre details...');
-      
+
       const factsString = result.facts.map(f => f.content).join('\n');
       const generatedScript = await gemini.generateScript(topic, factsString, geminiKey);
       setScript(generatedScript);
@@ -217,7 +217,7 @@ const App: React.FC = () => {
 
   const handleGenerateAsset = async (sceneId: string, type: 'image' | 'video') => {
     if (!script) return;
-    
+
     const sceneIndex = script.scenes.findIndex(s => s.id === sceneId);
     if (sceneIndex === -1) return;
 
@@ -237,7 +237,7 @@ const App: React.FC = () => {
       } else {
         const scene = newScenes[sceneIndex];
         const result = await gemini.generateVideo(
-          scene.visualPrompt, 
+          scene.visualPrompt,
           (msg) => {
             setVideoProgress(prev => ({ ...prev, [sceneId]: msg }));
           },
@@ -258,7 +258,7 @@ const App: React.FC = () => {
       } else {
         setError(`Failed to generate asset: ${err.message}`);
         if (err.message?.includes("API Key is missing")) {
-            setShowSettings(true);
+          setShowSettings(true);
         }
       }
     } finally {
@@ -279,7 +279,7 @@ const App: React.FC = () => {
       setShowSettings(true);
       return;
     }
-    
+
     await checkApiKey();
     setIsRenderingMaster(true);
     setError(null);
@@ -287,20 +287,20 @@ const App: React.FC = () => {
 
     try {
       const response = await gemini.generateMasterVideo(
-        script, 
-        falKey, 
+        script,
+        falKey,
         (msg) => setMasterProgressMsg(msg),
         kieKey
       );
       setMasterVideoUrl(response.url);
-      
+
       try {
         archiveService.saveArchive(topic, script, response.url);
         console.log('Project automatically archived.');
       } catch (e) {
         console.warn('Failed to auto-archive:', e);
       }
-      
+
     } catch (err: any) {
       setError(`Master render failed: ${err.message}`);
       if (err.message?.includes("API Key is missing")) {
@@ -310,17 +310,17 @@ const App: React.FC = () => {
       setIsRenderingMaster(false);
     }
   };
-  
+
   const handleManualSave = () => {
-      if (!script) return;
-      try {
-          archiveService.saveArchive(topic, script, masterVideoUrl);
-          const originalError = error;
-          setError("Project saved to Archives!");
-          setTimeout(() => setError(originalError), 3000);
-      } catch (err: any) {
-          setError(`Failed to save archive: ${err.message}`);
-      }
+    if (!script) return;
+    try {
+      archiveService.saveArchive(topic, script, masterVideoUrl);
+      const originalError = error;
+      setError("Project saved to Archives!");
+      setTimeout(() => setError(originalError), 3000);
+    } catch (err: any) {
+      setError(`Failed to save archive: ${err.message}`);
+    }
   };
 
   const handleReset = () => {
@@ -336,28 +336,28 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 selection:bg-yellow-500/30">
-      <Header 
-        onOpenSettings={() => setShowSettings(true)} 
+      <Header
+        onOpenSettings={() => setShowSettings(true)}
         onOpenArchives={handleOpenArchives}
       />
-      
+
       <main className="max-w-7xl mx-auto px-6 py-8">
         {error && (
           <div className="mb-8 p-4 bg-red-900/20 border border-red-500/50 rounded-xl flex items-center justify-between animate-in slide-in-from-top duration-300 sticky top-24 z-40 backdrop-blur-sm">
             <p className={error === "Project saved to Archives!" ? "text-green-400 font-bold" : "text-red-400 text-sm"}>
-                {error === "Project saved to Archives!" ? "✓ " : "Error: "}{error}
+              {error === "Project saved to Archives!" ? "✓ " : "Error: "}{error}
             </p>
             <button onClick={() => setError(null)} className="text-zinc-400 hover:text-white">✕</button>
           </div>
         )}
 
         {currentStep === AppState.ARCHIVES && (
-            <Archives 
-                archives={archives}
-                onLoad={handleLoadArchive}
-                onDelete={handleDeleteArchive}
-                onClose={() => setCurrentStep(script ? AppState.ASSET_GEN : AppState.IDLE)}
-            />
+          <Archives
+            archives={archives}
+            onLoad={handleLoadArchive}
+            onDelete={handleDeleteArchive}
+            onClose={() => setCurrentStep(script ? AppState.ASSET_GEN : AppState.IDLE)}
+          />
         )}
 
         {currentStep === AppState.IDLE && (
@@ -368,7 +368,7 @@ const App: React.FC = () => {
             <p className="text-zinc-400 text-lg mb-10 text-center max-w-xl">
               Coherent scene-by-scene generation. Powered by <b>Veo 3.1</b> and <b>FFmpeg</b> for seamless historical storytelling.
             </p>
-            
+
             <form onSubmit={handleResearch} className="w-full max-w-2xl relative group">
               <input
                 type="text"
@@ -404,8 +404,8 @@ const App: React.FC = () => {
                     )}
                   </h3>
                   <div className="flex gap-2">
-                    <button 
-                      onClick={handleManualSave} 
+                    <button
+                      onClick={handleManualSave}
                       className="text-xs text-zinc-500 hover:text-yellow-500 uppercase tracking-tighter transition"
                       title="Save to Archives"
                     >
@@ -414,7 +414,7 @@ const App: React.FC = () => {
                     <button onClick={handleReset} className="text-xs text-zinc-500 hover:text-white uppercase tracking-tighter transition">Restart</button>
                   </div>
                 </div>
-                
+
                 <div className="p-6 space-y-8 h-[75vh] overflow-y-auto custom-scrollbar">
                   <div className="group">
                     <label className="text-[10px] uppercase tracking-[0.2em] text-zinc-500 font-bold block mb-2">Hook</label>
@@ -431,7 +431,7 @@ const App: React.FC = () => {
             <div className="lg:col-span-8 space-y-6">
               <div className="flex justify-between items-center bg-zinc-900/50 p-4 rounded-xl border border-white/5">
                 <h3 className="text-lg font-impact tracking-widest flex items-center gap-2 uppercase">
-                   Scene Pipeline
+                  Scene Pipeline
                 </h3>
                 <span className="text-xs bg-zinc-800 px-3 py-1 rounded-full text-zinc-400 font-mono">
                   {script.scenes.length} Segments
@@ -445,28 +445,28 @@ const App: React.FC = () => {
                       <span className="text-yellow-500/50 font-bold">#{scene.id}</span>
                       <span>{scene.timestamp}</span>
                     </div>
-                    
+
                     <div className="flex-1 space-y-3">
                       <p className="text-sm text-zinc-100 font-medium leading-snug">{scene.text}</p>
                       <div className="text-[10px] text-zinc-500 font-mono bg-black/30 p-3 rounded-xl border border-white/5 italic">
                         Visual: {scene.visualPrompt}
                       </div>
-                      
+
                       <div className="flex gap-2 pt-2">
-                         <button 
-                            disabled={scene.isGenerating}
-                            onClick={() => handleGenerateAsset(scene.id, 'image')}
-                            className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${scene.assetType === 'image' && scene.assetUrl ? 'bg-yellow-500/10 text-yellow-500' : 'bg-zinc-800/50 text-zinc-400 hover:text-white'}`}
-                          >
-                           DRAFT IMAGE
-                         </button>
-                         <button 
-                            disabled={scene.isGenerating}
-                            onClick={() => handleGenerateAsset(scene.id, 'video')}
-                            className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${scene.assetType === 'video' && scene.assetUrl ? 'bg-yellow-500/10 text-yellow-500' : 'bg-zinc-800/50 text-zinc-400 hover:text-white'}`}
-                          >
-                           RENDER VIDEO
-                         </button>
+                        <button
+                          disabled={scene.isGenerating}
+                          onClick={() => handleGenerateAsset(scene.id, 'image')}
+                          className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${scene.assetType === 'image' && scene.assetUrl ? 'bg-yellow-500/10 text-yellow-500' : 'bg-zinc-800/50 text-zinc-400 hover:text-white'}`}
+                        >
+                          DRAFT IMAGE
+                        </button>
+                        <button
+                          disabled={scene.isGenerating}
+                          onClick={() => handleGenerateAsset(scene.id, 'video')}
+                          className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${scene.assetType === 'video' && scene.assetUrl ? 'bg-yellow-500/10 text-yellow-500' : 'bg-zinc-800/50 text-zinc-400 hover:text-white'}`}
+                        >
+                          RENDER VIDEO
+                        </button>
                       </div>
                     </div>
 
@@ -475,7 +475,17 @@ const App: React.FC = () => {
                         scene.assetType === 'image' ? (
                           <img src={scene.assetUrl} alt="Scene" className="w-full h-full object-cover" />
                         ) : (
-                          <video src={scene.assetUrl} controls className="w-full h-full object-cover" />
+                          <video
+                            src={scene.assetUrl}
+                            controls
+                            className="w-full h-full object-cover"
+                            onError={(e) => {
+                              const target = e.target as HTMLVideoElement;
+                              if (target.src && !target.src.includes('blob:')) {
+                                console.warn("Asset link possibly expired:", scene.id);
+                              }
+                            }}
+                          />
                         )
                       ) : scene.isGenerating ? (
                         <div className="w-8 h-8 border-3 border-yellow-500 border-t-transparent rounded-full animate-spin"></div>
@@ -491,10 +501,10 @@ const App: React.FC = () => {
 
               <div className="sticky bottom-0 p-5 bg-zinc-900/90 backdrop-blur-2xl border border-yellow-500/20 rounded-3xl flex items-center justify-between shadow-2xl">
                 <div className="flex flex-col">
-                    <span className="text-sm font-bold">Histori-Bot Status</span>
-                    <span className="text-[10px] text-zinc-400 uppercase tracking-wider">{script.scenes.filter(s => s.assetUrl && s.assetType === 'video').length} / {script.scenes.length} Scenes Ready</span>
+                  <span className="text-sm font-bold">Histori-Bot Status</span>
+                  <span className="text-[10px] text-zinc-400 uppercase tracking-wider">{script.scenes.filter(s => s.assetUrl && s.assetType === 'video').length} / {script.scenes.length} Scenes Ready</span>
                 </div>
-                
+
                 <div className="flex gap-3">
                   <button onClick={handleFullRender} disabled={isRenderingMaster} className="px-8 py-3 bg-yellow-500 text-zinc-950 font-bold rounded-2xl text-xs hover:bg-yellow-400 transition flex items-center gap-2 shadow-lg shadow-yellow-500/20 active:scale-95">
                     <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd" /></svg>
@@ -517,12 +527,23 @@ const App: React.FC = () => {
                 <button onClick={() => setMasterVideoUrl(null)} className="text-zinc-500 hover:text-white text-xs uppercase tracking-widest">Edit Scenes</button>
               </div>
 
-              <div className="aspect-[9/16] bg-black rounded-[2rem] overflow-hidden border border-white/10 shadow-inner mb-8 ring-4 ring-yellow-500/10">
-                <video src={masterVideoUrl} controls autoPlay className="w-full h-full object-cover" />
+              <div className="aspect-[9/16] bg-black rounded-[2rem] overflow-hidden border border-white/10 shadow-inner mb-8 ring-4 ring-yellow-500/10 relative group">
+                <video
+                  src={masterVideoUrl}
+                  controls
+                  autoPlay
+                  className="w-full h-full object-cover"
+                  onError={(e) => {
+                    const target = e.target as HTMLVideoElement;
+                    if (target.src) {
+                      setError("Video link may have expired (14-day limit). Try re-rendering scenes.");
+                    }
+                  }}
+                />
               </div>
 
               <div className="grid grid-cols-2 gap-4">
-                <button 
+                <button
                   onClick={async () => {
                     try {
                       setError(null);
@@ -531,7 +552,7 @@ const App: React.FC = () => {
                       a.download = `histori-bot-${topic.toLowerCase().replace(/\s/g, '-')}.mp4`;
                       a.target = '_blank';
                       a.click();
-                      
+
                       setTimeout(async () => {
                         try {
                           const response = await fetch(masterVideoUrl);
@@ -573,15 +594,15 @@ const App: React.FC = () => {
         <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-[110] flex items-center justify-center p-6">
           <div className="bg-zinc-900 border border-white/10 rounded-3xl p-8 max-w-md w-full shadow-2xl animate-in zoom-in-95 duration-200">
             <h3 className="text-2xl font-impact tracking-widest text-white uppercase mb-6 flex items-center gap-2">
-               Engine Configuration
+              Engine Configuration
             </h3>
-            
+
             <div className="space-y-6">
               {/* Gemini API Key */}
               <div>
                 <label className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold block mb-2">Google Gemini API Key</label>
                 <p className="text-[10px] text-zinc-500 mb-2">Required for research, scripting, and image generation. {envGemini ? <span className="text-green-500 font-bold">(Present in .env)</span> : <span className="text-yellow-500 font-bold">(Missing in .env)</span>}</p>
-                <input 
+                <input
                   type="password"
                   placeholder="Paste your Gemini API key"
                   className="w-full bg-zinc-950 border border-white/10 rounded-xl px-4 py-3 text-sm focus:border-yellow-500 outline-none transition"
@@ -594,7 +615,7 @@ const App: React.FC = () => {
               <div>
                 <label className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold block mb-2">KIE AI API Key (Veo 3.1)</label>
                 <p className="text-[10px] text-zinc-500 mb-2">Required for Veo video generation. {envKie ? <span className="text-green-500 font-bold">(Present in .env)</span> : <span className="text-yellow-500 font-bold">(Missing in .env)</span>}</p>
-                <input 
+                <input
                   type="password"
                   placeholder="Paste your KIE AI key"
                   className="w-full bg-zinc-950 border border-white/10 rounded-xl px-4 py-3 text-sm focus:border-yellow-500 outline-none transition"
@@ -607,7 +628,7 @@ const App: React.FC = () => {
               <div>
                 <label className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold block mb-2">Fal.ai API Key (FFmpeg)</label>
                 <p className="text-[10px] text-zinc-500 mb-2">Required for stitching videos.</p>
-                <input 
+                <input
                   type="password"
                   placeholder="Paste your fal.ai key"
                   className="w-full bg-zinc-950 border border-white/10 rounded-xl px-4 py-3 text-sm focus:border-yellow-500 outline-none transition"
@@ -618,13 +639,13 @@ const App: React.FC = () => {
             </div>
 
             <div className="mt-8 flex gap-3">
-              <button 
+              <button
                 onClick={saveSettings}
                 className="flex-1 bg-yellow-500 text-zinc-950 font-bold py-3 rounded-xl hover:bg-yellow-400 transition text-sm"
               >
                 SAVE & CLOSE
               </button>
-              <button 
+              <button
                 onClick={() => setShowSettings(false)}
                 className="flex-1 bg-zinc-800 text-white font-bold py-3 rounded-xl hover:bg-zinc-700 transition text-sm"
               >
