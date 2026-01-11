@@ -1,6 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import Header from './components/Header';
 import ArchivesModal from './components/ArchivesModal';
+import SettingsModal from './components/SettingsModal';
+import HeroSection from './components/HeroSection';
+import Storyboard from './components/Storyboard';
+import ScenePipeline from './components/ScenePipeline';
+import MasterVideoView from './components/MasterVideoView';
+import { ErrorBanner, LoadingOverlay, RenderingOverlay } from './components/StatusOverlays';
 import { AppState, VideoScript, Fact, ProjectData } from './types';
 import * as gemini from './services/geminiService';
 import * as storage from './services/storage';
@@ -20,16 +26,6 @@ const App: React.FC = () => {
   const [showSettings, setShowSettings] = useState(false);
   const [showArchives, setShowArchives] = useState(false);
   
-  // API Keys
-  const [falKey, setFalKey] = useState(localStorage.getItem('FAL_API_KEY') || '');
-  const [geminiKey, setGeminiKey] = useState(localStorage.getItem('GEMINI_API_KEY') || '');
-  const [kieKey, setKieKey] = useState(localStorage.getItem('KIEAI_API_KEY') || '');
-  
-  // Env presence check
-  const envHasGemini = !!process.env.GEMINI_API_KEY;
-  const envHasKie = !!process.env.KIEAI_API_KEY;
-  const envHasFal = !!process.env.FAL_API_KEY;
-  
   // Master Render States
   const [isRenderingMaster, setIsRenderingMaster] = useState(false);
   const [masterVideoUrl, setMasterVideoUrl] = useState<string | null>(null);
@@ -40,11 +36,6 @@ const App: React.FC = () => {
 
   // Load latest project on mount
   useEffect(() => {
-    // Only auto-open if absolutely no keys are found
-    if (!envHasGemini && !geminiKey) {
-        // Optional: could prompt user immediately
-    }
-    
     checkApiKey(true);
     const archives = storage.getArchives();
     if (archives.length > 0) {
@@ -61,10 +52,7 @@ const App: React.FC = () => {
 
   const debouncedSave = () => {
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
-    
-    saveTimeoutRef.current = setTimeout(() => {
-      saveProgress();
-    }, 2000);
+    saveTimeoutRef.current = setTimeout(() => saveProgress(), 2000);
   };
 
   const saveProgress = () => {
@@ -81,16 +69,11 @@ const App: React.FC = () => {
     };
     
     const existing = storage.getArchive(projectId);
-    if (existing) {
-      projectData.createdAt = existing.createdAt;
-    }
+    if (existing) projectData.createdAt = existing.createdAt;
 
     const success = storage.saveArchive(projectData);
-    if (!success) {
-      console.warn('Could not auto-save project');
-    } else {
-      console.log('Project saved:', projectId);
-    }
+    if (!success) console.warn('Could not auto-save project');
+    else console.log('Project saved:', projectId);
   };
 
   const loadProject = (project: ProjectData) => {
@@ -102,7 +85,7 @@ const App: React.FC = () => {
     
     if (project.masterVideoUrl) {
       setCurrentStep(AppState.ASSET_GEN);
-    } else if (project.script && project.script.scenes.some(s => s.assetUrl && s.assetType === 'video')) {
+    } else if (project.script && (project.script.scenes.some(s => s.assetUrl) || project.script.scenes.some(s => s.kieTaskId))) {
       setCurrentStep(AppState.ASSET_GEN);
     } else if (project.script) {
       setCurrentStep(AppState.ASSET_GEN);
@@ -118,26 +101,14 @@ const App: React.FC = () => {
 
   const handleDeleteArchive = (id: string) => {
     storage.deleteArchive(id);
-    if (id === projectId) {
-      handleReset();
-    }
-  };
-
-  const saveSettings = () => {
-    localStorage.setItem('FAL_API_KEY', falKey);
-    localStorage.setItem('GEMINI_API_KEY', geminiKey);
-    localStorage.setItem('KIEAI_API_KEY', kieKey);
-    setShowSettings(false);
+    if (id === projectId) handleReset();
   };
 
   const checkApiKey = async (silent = false) => {
     const aistudio = (window as any).aistudio;
     if (typeof aistudio?.hasSelectedApiKey === 'function') {
       const hasKey = await aistudio.hasSelectedApiKey();
-      if (!hasKey && !silent) {
-        await aistudio.openSelectKey();
-      }
-      return true;
+      if (!hasKey && !silent) await aistudio.openSelectKey();
     }
     return true;
   };
@@ -151,16 +122,14 @@ const App: React.FC = () => {
     e.preventDefault();
     if (!topic) return;
     
-    // Check if keys are present
-    if (!geminiKey && !envHasGemini) {
+    const geminiKey = localStorage.getItem('GEMINI_API_KEY') || process.env.GEMINI_API_KEY;
+    if (!geminiKey) {
       setError("Missing Gemini API Key. Please add it in Settings.");
       setShowSettings(true);
       return;
     }
 
-    if (currentStep === AppState.IDLE) {
-      setProjectId(crypto.randomUUID());
-    }
+    if (currentStep === AppState.IDLE) setProjectId(crypto.randomUUID());
     
     setLoading(true);
     setStatusMessage('Searching historical archives...');
@@ -190,15 +159,16 @@ const App: React.FC = () => {
     const sceneIndex = script.scenes.findIndex(s => s.id === sceneId);
     if (sceneIndex === -1) return;
 
-    // Check keys
     if (type === 'image') {
-       if (!geminiKey && !envHasGemini) {
+       const geminiKey = localStorage.getItem('GEMINI_API_KEY') || process.env.GEMINI_API_KEY;
+       if (!geminiKey) {
          setError("Missing Gemini API Key. Please add it in Settings.");
          setShowSettings(true);
          return;
        }
     } else if (type === 'video') {
-       if (!kieKey && !envHasKie) {
+       const kieKey = localStorage.getItem('KIEAI_API_KEY') || process.env.KIEAI_API_KEY;
+       if (!kieKey) {
          setError("Missing KIE AI API Key. Please add it in Settings.");
          setShowSettings(true);
          return;
@@ -218,14 +188,8 @@ const App: React.FC = () => {
         const scene = newScenes[sceneIndex];
         const result = await gemini.generateVideo(
           scene.visualPrompt, 
-          (msg) => {
-            setVideoProgress(prev => ({ ...prev, [sceneId]: msg }));
-          },
-          {
-            sceneText: scene.text,
-            topic: script.topic,
-            timestamp: scene.timestamp
-          }
+          (msg) => setVideoProgress(prev => ({ ...prev, [sceneId]: msg })),
+          { sceneText: scene.text, topic: script.topic, timestamp: scene.timestamp }
         );
         newScenes[sceneIndex].assetUrl = result.url;
         newScenes[sceneIndex].kieTaskId = result.taskId;
@@ -250,10 +214,9 @@ const App: React.FC = () => {
 
   const handleFullRender = async () => {
     if (!script) return;
+    const falKey = localStorage.getItem('FAL_API_KEY') || process.env.FAL_API_KEY;
     
-    const effectiveFalKey = falKey || process.env.FAL_API_KEY;
-    
-    if (!effectiveFalKey) {
+    if (!falKey) {
       setError("Please enter your fal.ai API key in Settings before rendering.");
       setShowSettings(true);
       return;
@@ -264,9 +227,7 @@ const App: React.FC = () => {
     setMasterProgressMsg("Orchestrating Historical Chaos...");
 
     try {
-      const response = await gemini.generateMasterVideo(script, effectiveFalKey, (msg) => {
-        setMasterProgressMsg(msg);
-      });
+      const response = await gemini.generateMasterVideo(script, falKey, (msg) => setMasterProgressMsg(msg));
       setMasterVideoUrl(response.url);
     } catch (err: any) {
       setError(`Master render failed: ${err.message}`);
@@ -294,300 +255,52 @@ const App: React.FC = () => {
         onNewProject={handleReset}
       />
       
-      <main className="max-w-7xl mx-auto px-6 py-8">
-        {error && (
-          <div className="mb-8 p-4 bg-red-900/20 border border-red-500/50 rounded-xl flex items-center justify-between animate-in slide-in-from-top duration-300">
-            <p className="text-red-400 text-sm">Error: {error}</p>
-            <button onClick={() => setError(null)} className="text-red-400 hover:text-white">✕</button>
-          </div>
-        )}
+      <main className="max-w-7xl mx-auto px-6 py-8 h-[calc(100vh-80px)]">
+        {error && <ErrorBanner error={error} onDismiss={() => setError(null)} />}
 
         {currentStep === AppState.IDLE && (
-          <div className="flex flex-col items-center justify-center py-20 animate-in fade-in zoom-in-95 duration-700">
-            <h2 className="text-5xl md:text-7xl font-impact tracking-wider mb-6 text-center max-w-3xl uppercase">
-              Make History <span className="text-yellow-500 underline decoration-zinc-800">Go Viral</span>
-            </h2>
-            <p className="text-zinc-400 text-lg mb-10 text-center max-w-xl">
-              Coherent scene-by-scene generation. Powered by <b>Veo 3.1</b> and <b>FFmpeg</b> for seamless historical storytelling.
-            </p>
-            
-            <form onSubmit={handleResearch} className="w-full max-w-2xl relative group">
-              <input
-                type="text"
-                placeholder="Enter a historical topic (e.g. The Emu War)"
-                className="w-full bg-zinc-900 border-2 border-white/5 group-hover:border-yellow-500/50 focus:border-yellow-500 rounded-2xl py-5 px-6 outline-none transition-all text-xl shadow-2xl shadow-black"
-                value={topic}
-                onChange={(e) => setTopic(e.target.value)}
-                disabled={loading}
-              />
-              <button
-                type="submit"
-                disabled={loading || !topic}
-                className="absolute right-3 top-3 bottom-3 px-8 bg-yellow-500 hover:bg-yellow-400 text-zinc-950 font-bold rounded-xl transition-all shadow-lg"
-              >
-                {loading ? "Drafting..." : "GO!"}
-              </button>
-            </form>
-          </div>
+          <HeroSection 
+            topic={topic} 
+            setTopic={setTopic} 
+            loading={loading} 
+            onSubmit={handleResearch} 
+          />
         )}
 
         {currentStep !== AppState.IDLE && script && !masterVideoUrl && (
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 animate-in fade-in duration-500">
-            <div className="lg:col-span-4 space-y-6">
-              <div className="bg-zinc-900/50 border border-white/10 rounded-2xl overflow-hidden backdrop-blur-sm shadow-xl">
-                <div className="p-6 border-b border-white/10 flex justify-between items-center">
-                  <h3 className="font-bold flex items-center gap-2">
-                    <span className="w-2 h-2 rounded-full bg-yellow-500 shadow-[0_0_8px_rgba(234,179,8,0.5)]"></span>
-                    Storyboard
-                    {script.scenes.some(s => s.assetUrl && s.assetType === 'video') && (
-                      <span className="text-xs bg-green-500/20 text-green-400 px-2 py-0.5 rounded ml-2" title="Progress auto-saved">
-                        💾 Saved
-                      </span>
-                    )}
-                  </h3>
-                  <div className="flex gap-2">
-                    <button 
-                      onClick={saveProgress} 
-                      className="text-xs text-zinc-500 hover:text-yellow-500 uppercase tracking-tighter transition"
-                      title="Manually save progress"
-                    >
-                      Save
-                    </button>
-                    <button onClick={handleReset} className="text-xs text-zinc-500 hover:text-white uppercase tracking-tighter transition">New Topic</button>
-                  </div>
-                </div>
-                
-                <div className="p-6 space-y-8 h-[75vh] overflow-y-auto custom-scrollbar">
-                  <div className="group">
-                    <label className="text-[10px] uppercase tracking-[0.2em] text-zinc-500 font-bold block mb-2">Hook</label>
-                    <p className="text-zinc-300 italic border-l-2 border-yellow-500/30 pl-4 py-1 text-sm">"{script.hook}"</p>
-                  </div>
-                  <div className="group">
-                    <label className="text-[10px] uppercase tracking-[0.2em] text-zinc-500 font-bold block mb-2">Full Script</label>
-                    <p className="text-zinc-100 text-sm leading-relaxed whitespace-pre-wrap">{script.body}</p>
-                  </div>
-                </div>
-              </div>
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 animate-in fade-in duration-500 h-full">
+            <div className="lg:col-span-4 h-full">
+              <Storyboard 
+                script={script} 
+                onSave={saveProgress} 
+                onNewTopic={handleReset} 
+              />
             </div>
 
-            <div className="lg:col-span-8 space-y-6">
-              <div className="flex justify-between items-center bg-zinc-900/50 p-4 rounded-xl border border-white/5">
-                <h3 className="text-lg font-impact tracking-widest flex items-center gap-2 uppercase">
-                   Scene Pipeline
-                </h3>
-                <span className="text-xs bg-zinc-800 px-3 py-1 rounded-full text-zinc-400 font-mono">
-                  {script.scenes.length} Segments
-                </span>
-              </div>
-
-              <div className="space-y-4 max-h-[70vh] overflow-y-auto pr-2 custom-scrollbar">
-                {script.scenes.map((scene) => (
-                  <div key={scene.id} className="group relative bg-zinc-900 border border-white/5 rounded-2xl p-4 flex gap-6 hover:border-yellow-500/30 transition-all shadow-lg">
-                    <div className="w-12 text-xs font-mono text-zinc-600 pt-1 flex flex-col items-center">
-                      <span className="text-yellow-500/50 font-bold">#{scene.id}</span>
-                      <span>{scene.timestamp}</span>
-                    </div>
-                    
-                    <div className="flex-1 space-y-3">
-                      <p className="text-sm text-zinc-100 font-medium leading-snug">{scene.text}</p>
-                      <div className="text-[10px] text-zinc-500 font-mono bg-black/30 p-3 rounded-xl border border-white/5 italic">
-                        Visual: {scene.visualPrompt}
-                      </div>
-                      
-                      <div className="flex gap-2 pt-2">
-                         <button 
-                            disabled={scene.isGenerating}
-                            onClick={() => handleGenerateAsset(scene.id, 'image')}
-                            className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${scene.assetType === 'image' && scene.assetUrl ? 'bg-yellow-500/10 text-yellow-500' : 'bg-zinc-800/50 text-zinc-400 hover:text-white'}`}
-                          >
-                           DRAFT IMAGE
-                         </button>
-                         <button 
-                            disabled={scene.isGenerating}
-                            onClick={() => handleGenerateAsset(scene.id, 'video')}
-                            className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${scene.assetType === 'video' && scene.assetUrl ? 'bg-yellow-500/10 text-yellow-500' : 'bg-zinc-800/50 text-zinc-400 hover:text-white'}`}
-                          >
-                           RENDER VIDEO
-                         </button>
-                      </div>
-                    </div>
-
-                    <div className="w-44 aspect-[9/16] bg-black rounded-2xl overflow-hidden border border-white/10 flex items-center justify-center relative shadow-inner">
-                      {scene.assetUrl ? (
-                        scene.assetType === 'image' ? (
-                          <img src={scene.assetUrl} alt="Scene" className="w-full h-full object-cover" />
-                        ) : (
-                          <video src={scene.assetUrl} controls className="w-full h-full object-cover" />
-                        )
-                      ) : scene.isGenerating ? (
-                        <div className="w-8 h-8 border-3 border-yellow-500 border-t-transparent rounded-full animate-spin"></div>
-                      ) : (
-                        <div className="text-center p-4">
-                          <p className="text-[10px] text-zinc-600 font-bold uppercase tracking-widest">Awaiting Render</p>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              <div className="sticky bottom-0 p-5 bg-zinc-900/90 backdrop-blur-2xl border border-yellow-500/20 rounded-3xl flex items-center justify-between shadow-2xl">
-                <div className="flex flex-col">
-                    <span className="text-sm font-bold">Histori-Bot Status</span>
-                    <span className="text-[10px] text-zinc-400 uppercase tracking-wider">{script.scenes.filter(s => s.assetUrl && s.assetType === 'video').length} / {script.scenes.length} Scenes Ready</span>
-                </div>
-                
-                <div className="flex gap-3">
-                  <button onClick={handleFullRender} disabled={isRenderingMaster} className="px-8 py-3 bg-yellow-500 text-zinc-950 font-bold rounded-2xl text-xs hover:bg-yellow-400 transition flex items-center gap-2 shadow-lg shadow-yellow-500/20 active:scale-95">
-                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd" /></svg>
-                    STITCH & RENDER MASTER
-                  </button>
-                </div>
-              </div>
+            <div className="lg:col-span-8 h-full">
+              <ScenePipeline 
+                script={script}
+                videoProgress={videoProgress}
+                onGenerateAsset={handleGenerateAsset}
+                onFullRender={handleFullRender}
+                isRenderingMaster={isRenderingMaster}
+              />
             </div>
           </div>
         )}
 
         {masterVideoUrl && (
-          <div className="flex flex-col items-center py-10 animate-in fade-in slide-in-from-bottom duration-700">
-            <div className="bg-zinc-900 p-8 rounded-[3rem] border border-yellow-500/30 shadow-2xl max-w-2xl w-full">
-              <div className="flex justify-between items-center mb-8">
-                <div>
-                  <h2 className="text-3xl font-impact tracking-widest text-yellow-500 uppercase">Master Content Generated</h2>
-                  <p className="text-zinc-500 text-sm uppercase">Topic: {topic}</p>
-                </div>
-                <button onClick={() => setMasterVideoUrl(null)} className="text-zinc-500 hover:text-white text-xs uppercase tracking-widest">Edit Scenes</button>
-              </div>
-
-              <div className="aspect-[9/16] bg-black rounded-[2rem] overflow-hidden border border-white/10 shadow-inner mb-8 ring-4 ring-yellow-500/10">
-                <video src={masterVideoUrl} controls autoPlay className="w-full h-full object-cover" />
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <button 
-                  onClick={async () => {
-                    try {
-                      setError(null);
-                      const a = document.createElement('a');
-                      a.href = masterVideoUrl;
-                      a.download = `histori-bot-${topic.toLowerCase().replace(/\s/g, '-')}.mp4`;
-                      a.target = '_blank';
-                      a.click();
-                      
-                      setTimeout(async () => {
-                        try {
-                          const response = await fetch(masterVideoUrl);
-                          if (response.ok) {
-                            const blob = await response.blob();
-                            const blobUrl = URL.createObjectURL(blob);
-                            const downloadLink = document.createElement('a');
-                            downloadLink.href = blobUrl;
-                            downloadLink.download = `histori-bot-${topic.toLowerCase().replace(/\s/g, '-')}.mp4`;
-                            document.body.appendChild(downloadLink);
-                            downloadLink.click();
-                            document.body.removeChild(downloadLink);
-                            URL.revokeObjectURL(blobUrl);
-                          }
-                        } catch (fetchError) {
-                          console.warn('Blob download fallback failed, using direct link:', fetchError);
-                        }
-                      }, 100);
-                    } catch (err: any) {
-                      setError(`Download failed: ${err.message}`);
-                    }
-                  }}
-                  className="bg-yellow-500 text-zinc-950 font-bold py-4 rounded-2xl hover:bg-yellow-400 transition flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
-                  DOWNLOAD MP4
-                </button>
-                <button onClick={handleReset} className="bg-zinc-800 text-white font-bold py-4 rounded-2xl hover:bg-zinc-700 transition">
-                  START NEW PROJECT
-                </button>
-              </div>
-            </div>
-          </div>
+          <MasterVideoView 
+            videoUrl={masterVideoUrl} 
+            topic={topic} 
+            onReset={handleReset}
+            onError={setError}
+          />
         )}
       </main>
 
-      {/* Settings Modal */}
-      {showSettings && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-[110] flex items-center justify-center p-6">
-          <div className="bg-zinc-900 border border-white/10 rounded-3xl p-8 max-w-md w-full shadow-2xl animate-in zoom-in-95 duration-200">
-            <h3 className="text-2xl font-impact tracking-widest text-white uppercase mb-6 flex items-center gap-2">
-               Engine Configuration
-            </h3>
-            
-            <div className="space-y-6">
-              <div>
-                <div className="flex justify-between items-center mb-2">
-                    <label className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold">Gemini API Key</label>
-                    <span className={`text-[10px] px-2 py-0.5 rounded ${envHasGemini ? 'bg-green-500/10 text-green-400' : 'bg-red-500/10 text-red-400'}`}>
-                        {envHasGemini ? 'ENV DETECTED' : 'ENV MISSING'}
-                    </span>
-                </div>
-                <input 
-                  type="password"
-                  placeholder={envHasGemini ? "Using env key (enter to override)" : "Required for text/image gen"}
-                  className="w-full bg-zinc-950 border border-white/10 rounded-xl px-4 py-3 text-sm focus:border-yellow-500 outline-none transition"
-                  value={geminiKey}
-                  onChange={(e) => setGeminiKey(e.target.value)}
-                />
-              </div>
-
-              <div>
-                <div className="flex justify-between items-center mb-2">
-                    <label className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold">KIE AI API Key</label>
-                    <span className={`text-[10px] px-2 py-0.5 rounded ${envHasKie ? 'bg-green-500/10 text-green-400' : 'bg-red-500/10 text-red-400'}`}>
-                        {envHasKie ? 'ENV DETECTED' : 'ENV MISSING'}
-                    </span>
-                </div>
-                <input 
-                  type="password"
-                  placeholder={envHasKie ? "Using env key (enter to override)" : "Required for video generation"}
-                  className="w-full bg-zinc-950 border border-white/10 rounded-xl px-4 py-3 text-sm focus:border-yellow-500 outline-none transition"
-                  value={kieKey}
-                  onChange={(e) => setKieKey(e.target.value)}
-                />
-              </div>
-
-              <div>
-                <div className="flex justify-between items-center mb-2">
-                    <label className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold">FAL.AI API KEY</label>
-                    <span className={`text-[10px] px-2 py-0.5 rounded ${envHasFal ? 'bg-green-500/10 text-green-400' : 'bg-red-500/10 text-red-400'}`}>
-                        {envHasFal ? 'ENV DETECTED' : 'ENV MISSING'}
-                    </span>
-                </div>
-                <p className="text-[10px] text-zinc-500 mb-2 leading-relaxed">Required for stitching multiple scenes using FFmpeg. Get one at <a href="https://fal.ai" target="_blank" className="text-yellow-500 hover:underline">fal.ai</a>.</p>
-                <input 
-                  type="password"
-                  placeholder={envHasFal ? "Using env key (enter to override)" : "Paste your fal.ai key here"}
-                  className="w-full bg-zinc-950 border border-white/10 rounded-xl px-4 py-3 text-sm focus:border-yellow-500 outline-none transition"
-                  value={falKey}
-                  onChange={(e) => setFalKey(e.target.value)}
-                />
-              </div>
-            </div>
-
-            <div className="mt-8 flex gap-3">
-              <button 
-                onClick={saveSettings}
-                className="flex-1 bg-yellow-500 text-zinc-950 font-bold py-3 rounded-xl hover:bg-yellow-400 transition text-sm shadow-lg shadow-yellow-500/20"
-              >
-                SAVE CONFIG
-              </button>
-              <button 
-                onClick={() => setShowSettings(false)}
-                className="flex-1 bg-zinc-800 text-white font-bold py-3 rounded-xl hover:bg-zinc-700 transition text-sm"
-              >
-                CLOSE
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Archives Modal */}
+      {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
+      
       {showArchives && (
         <ArchivesModal 
           archives={storage.getArchives()}
@@ -597,24 +310,8 @@ const App: React.FC = () => {
         />
       )}
 
-      {loading && (
-        <div className="fixed inset-0 bg-black/90 backdrop-blur-xl z-[100] flex flex-col items-center justify-center text-center">
-          <div className="w-24 h-24 border-4 border-yellow-500 border-t-transparent rounded-full animate-spin mb-8"></div>
-          <h3 className="text-3xl font-impact tracking-widest text-yellow-500 uppercase mb-3 animate-pulse">{statusMessage}</h3>
-        </div>
-      )}
-
-      {isRenderingMaster && (
-        <div className="fixed inset-0 bg-black/95 backdrop-blur-2xl z-[100] flex flex-col items-center justify-center text-center p-6">
-          <div className="relative mb-12">
-            <div className="w-40 h-40 border-8 border-yellow-500/10 rounded-full"></div>
-            <div className="absolute inset-0 w-40 h-40 border-8 border-yellow-500 border-t-transparent rounded-full animate-spin"></div>
-            <div className="absolute inset-0 flex items-center justify-center text-4xl font-impact text-yellow-500 tracking-widest">VEO</div>
-          </div>
-          <h3 className="text-4xl font-impact tracking-widest text-white uppercase mb-4">{masterProgressMsg}</h3>
-          <p className="text-zinc-500 uppercase text-xs tracking-[0.5em] animate-pulse">Rendering coherent historical segments...</p>
-        </div>
-      )}
+      {loading && <LoadingOverlay message={statusMessage} />}
+      {isRenderingMaster && <RenderingOverlay message={masterProgressMsg} />}
     </div>
   );
 };
