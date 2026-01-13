@@ -1,3 +1,5 @@
+export type VideoStyle = 'cinematic' | 'gritty' | 'meme' | 'watercolor' | 'anime';
+
 export interface Scene {
   id: string;
   timestamp: string;

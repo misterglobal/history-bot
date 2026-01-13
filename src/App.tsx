@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import Header from './components/Header';
 import Archives from './components/Archives';
-import { AppState, VideoScript, Fact, Scene, ArchiveItem } from './types';
+import { AppState, VideoScript, Fact, Scene, ArchiveItem, VideoStyle } from './types';
 import * as gemini from './services/geminiService';
 import * as archiveService from './services/archiveService';
 
@@ -15,6 +15,7 @@ const App: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [videoProgress, setVideoProgress] = useState<Record<string, string>>({});
   const [archives, setArchives] = useState<ArchiveItem[]>([]);
+  const [selectedStyle, setSelectedStyle] = useState<VideoStyle>('cinematic');
 
   // Settings & Config
   const [showSettings, setShowSettings] = useState(false);
@@ -225,31 +226,77 @@ const App: React.FC = () => {
       await checkApiKey();
     }
 
-    const newScenes = [...script.scenes];
-    newScenes[sceneIndex].isGenerating = true;
-    newScenes[sceneIndex].assetType = type;
-    setScript({ ...script, scenes: newScenes });
+    // Prepare fresh scene state (clear old URLs/IDs)
+    setScript(prev => {
+      if (!prev) return null;
+      const scenes = [...prev.scenes];
+      const idx = scenes.findIndex(s => s.id === sceneId);
+      if (idx !== -1) {
+        scenes[idx] = {
+          ...scenes[idx],
+          isGenerating: true,
+          assetType: type,
+          assetUrl: undefined, // Clear stale URL
+          kieTaskId: undefined // Clear stale Task ID
+        };
+      }
+      return { ...prev, scenes };
+    });
 
     try {
       if (type === 'image') {
-        const url = await gemini.generateImage(newScenes[sceneIndex].visualPrompt, geminiKey);
-        newScenes[sceneIndex].assetUrl = url;
+        const url = await gemini.generateImage(script.scenes[sceneIndex].visualPrompt, geminiKey);
+        setScript(prev => {
+          if (!prev) return null;
+          const scenes = [...prev.scenes];
+          const idx = scenes.findIndex(s => s.id === sceneId);
+          if (idx !== -1) {
+            scenes[idx] = { ...scenes[idx], assetUrl: url, isGenerating: false };
+          }
+          return { ...prev, scenes };
+        });
       } else {
-        const scene = newScenes[sceneIndex];
+        const currentScene = script.scenes[sceneIndex];
         const result = await gemini.generateVideo(
-          scene.visualPrompt,
+          currentScene.visualPrompt,
           (msg) => {
             setVideoProgress(prev => ({ ...prev, [sceneId]: msg }));
           },
           {
-            sceneText: scene.text,
+            sceneText: currentScene.text,
             topic: script.topic,
-            timestamp: scene.timestamp
+            timestamp: currentScene.timestamp,
+            style: selectedStyle
           },
-          kieKey
+          kieKey,
+          (taskId) => {
+            // Save taskId immediately upon generation
+            setScript(prev => {
+              if (!prev) return null;
+              const scenes = [...prev.scenes];
+              const idx = scenes.findIndex(s => s.id === sceneId);
+              if (idx !== -1) {
+                scenes[idx] = { ...scenes[idx], kieTaskId: taskId };
+              }
+              return { ...prev, scenes };
+            });
+          }
         );
-        newScenes[sceneIndex].assetUrl = result.url;
-        newScenes[sceneIndex].kieTaskId = result.taskId;
+
+        setScript(prev => {
+          if (!prev) return null;
+          const scenes = [...prev.scenes];
+          const idx = scenes.findIndex(s => s.id === sceneId);
+          if (idx !== -1) {
+            scenes[idx] = {
+              ...scenes[idx],
+              assetUrl: result.url,
+              kieTaskId: result.taskId,
+              isGenerating: false
+            };
+          }
+          return { ...prev, scenes };
+        });
       }
     } catch (err: any) {
       if (err.message === "API_KEY_EXPIRED") {
@@ -261,14 +308,23 @@ const App: React.FC = () => {
           setShowSettings(true);
         }
       }
+
+      // Reset generating state on error
+      setScript(prev => {
+        if (!prev) return null;
+        const scenes = [...prev.scenes];
+        const idx = scenes.findIndex(s => s.id === sceneId);
+        if (idx !== -1) {
+          scenes[idx] = { ...scenes[idx], isGenerating: false };
+        }
+        return { ...prev, scenes };
+      });
     } finally {
-      newScenes[sceneIndex].isGenerating = false;
       setVideoProgress(prev => {
         const next = { ...prev };
         delete next[sceneId];
         return next;
       });
-      setScript({ ...script, scenes: newScenes });
     }
   };
 
@@ -290,7 +346,8 @@ const App: React.FC = () => {
         script,
         falKey,
         (msg) => setMasterProgressMsg(msg),
-        kieKey
+        kieKey,
+        selectedStyle
       );
       setMasterVideoUrl(response.url);
 
@@ -369,6 +426,21 @@ const App: React.FC = () => {
               Coherent scene-by-scene generation. Powered by <b>Veo 3.1</b> and <b>FFmpeg</b> for seamless historical storytelling.
             </p>
 
+            <div className="flex flex-wrap justify-center gap-3 mb-10 max-w-2xl">
+              {(['cinematic', 'gritty', 'meme', 'watercolor', 'anime'] as VideoStyle[]).map((style) => (
+                <button
+                  key={style}
+                  onClick={() => setSelectedStyle(style)}
+                  className={`px-4 py-2 rounded-full text-xs font-bold uppercase tracking-widest transition-all ${selectedStyle === style
+                    ? 'bg-yellow-500 text-zinc-950 shadow-lg shadow-yellow-500/20 scale-105'
+                    : 'bg-zinc-900 text-zinc-500 hover:text-white border border-white/5'
+                    }`}
+                >
+                  {style}
+                </button>
+              ))}
+            </div>
+
             <form onSubmit={handleResearch} className="w-full max-w-2xl relative group">
               <input
                 type="text"
@@ -422,7 +494,14 @@ const App: React.FC = () => {
                   </div>
                   <div className="group">
                     <label className="text-[10px] uppercase tracking-[0.2em] text-zinc-500 font-bold block mb-2">Full Script</label>
-                    <p className="text-zinc-100 text-sm leading-relaxed whitespace-pre-wrap">{script.body}</p>
+                    <textarea
+                      className="w-full bg-transparent text-zinc-100 text-sm leading-relaxed whitespace-pre-wrap outline-none focus:ring-1 focus:ring-yellow-500/30 rounded p-1 min-h-[40vh] resize-none custom-scrollbar"
+                      value={script.body}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setScript(prev => prev ? { ...prev, body: val } : null);
+                      }}
+                    />
                   </div>
                 </div>
               </div>
@@ -439,7 +518,7 @@ const App: React.FC = () => {
               </div>
 
               <div className="space-y-4 max-h-[70vh] overflow-y-auto pr-2 custom-scrollbar">
-                {script.scenes.map((scene) => (
+                {script.scenes.map((scene, idx) => (
                   <div key={scene.id} className="group relative bg-zinc-900 border border-white/5 rounded-2xl p-4 flex gap-6 hover:border-yellow-500/30 transition-all shadow-lg">
                     <div className="w-12 text-xs font-mono text-zinc-600 pt-1 flex flex-col items-center">
                       <span className="text-yellow-500/50 font-bold">#{scene.id}</span>
@@ -447,9 +526,47 @@ const App: React.FC = () => {
                     </div>
 
                     <div className="flex-1 space-y-3">
-                      <p className="text-sm text-zinc-100 font-medium leading-snug">{scene.text}</p>
+                      <textarea
+                        className="w-full bg-transparent text-sm text-zinc-100 font-medium leading-snug outline-none focus:ring-1 focus:ring-yellow-500/30 rounded p-1 resize-none"
+                        value={scene.text}
+                        rows={2}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setScript(prev => {
+                            if (!prev) return null;
+                            const scenes = [...prev.scenes];
+                            const idx = scenes.findIndex(s => s.id === scene.id);
+                            if (idx !== -1) {
+                              scenes[idx] = { ...scenes[idx], text: val };
+                            }
+                            return { ...prev, scenes };
+                          });
+                        }}
+                      />
                       <div className="text-[10px] text-zinc-500 font-mono bg-black/30 p-3 rounded-xl border border-white/5 italic">
-                        Visual: {scene.visualPrompt}
+                        <label className="block text-[8px] uppercase tracking-widest text-zinc-600 mb-1 font-bold">Visual Prompt</label>
+                        <textarea
+                          className="w-full bg-transparent outline-none focus:text-zinc-300 transition-colors resize-none"
+                          value={scene.visualPrompt}
+                          rows={3}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setScript(prev => {
+                              if (!prev) return null;
+                              const scenes = [...prev.scenes];
+                              const idx = scenes.findIndex(s => s.id === scene.id);
+                              if (idx !== -1) {
+                                scenes[idx] = {
+                                  ...scenes[idx],
+                                  visualPrompt: val,
+                                  assetUrl: undefined,
+                                  kieTaskId: undefined
+                                };
+                              }
+                              return { ...prev, scenes };
+                            });
+                          }}
+                        />
                       </div>
 
                       <div className="flex gap-2 pt-2">
@@ -664,14 +781,66 @@ const App: React.FC = () => {
       )}
 
       {isRenderingMaster && (
-        <div className="fixed inset-0 bg-black/95 backdrop-blur-2xl z-[100] flex flex-col items-center justify-center text-center p-6">
-          <div className="relative mb-12">
-            <div className="w-40 h-40 border-8 border-yellow-500/10 rounded-full"></div>
-            <div className="absolute inset-0 w-40 h-40 border-8 border-yellow-500 border-t-transparent rounded-full animate-spin"></div>
-            <div className="absolute inset-0 flex items-center justify-center text-4xl font-impact text-yellow-500 tracking-widest">VEO</div>
+        <div className="fixed inset-0 bg-black/95 backdrop-blur-2xl z-[100] flex flex-col items-center justify-center text-center p-6 overflow-hidden">
+          {/* Background Ambient Glow */}
+          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] h-[800px] bg-yellow-500/5 rounded-full blur-[120px] pointer-events-none animate-pulse"></div>
+
+          <div className="relative z-10 flex flex-col items-center max-w-2xl w-full">
+            <div className="relative mb-12 group">
+              <div className="w-48 h-48 border-[12px] border-yellow-500/5 rounded-full shadow-[0_0_50px_rgba(234,179,8,0.1)]"></div>
+              <div className="absolute inset-0 w-48 h-48 border-[12px] border-yellow-500 border-t-transparent rounded-full animate-[spin_3s_linear_infinite]"></div>
+              <div className="absolute inset-0 w-48 h-48 border-[2px] border-white/10 rounded-full animate-ping"></div>
+              <div className="absolute inset-0 flex flex-col items-center justify-center">
+                <span className="text-4xl font-impact text-yellow-500 tracking-widest group-hover:scale-110 transition-transform">VEO</span>
+                <span className="text-[10px] text-zinc-500 font-bold tracking-[0.3em] mt-1 uppercase">Engine 3.1</span>
+              </div>
+            </div>
+
+            <div className="space-y-4 w-full">
+              <h3 className="text-4xl font-impact tracking-widest text-white uppercase animate-in slide-in-from-bottom duration-500">
+                {masterProgressMsg}
+              </h3>
+
+              <div className="flex flex-col items-center gap-2">
+                <div className="w-full h-1 bg-zinc-900 rounded-full overflow-hidden border border-white/5 max-w-md">
+                  <div className="h-full bg-yellow-500 animate-[progress_20s_ease-in-out_infinite] shadow-[0_0_15px_rgba(234,179,8,0.5)]"></div>
+                </div>
+                <p className="text-zinc-500 uppercase text-[10px] tracking-[0.5em] font-bold">
+                  Splicing Chronological Reality
+                </p>
+              </div>
+
+              <div className="mt-12 bg-zinc-900/50 border border-white/5 rounded-2xl p-6 w-full text-left backdrop-blur-sm">
+                <div className="flex items-center gap-2 mb-4">
+                  <span className="w-2 h-2 rounded-full bg-yellow-500 animate-pulse"></span>
+                  <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Active Pipeline</span>
+                </div>
+                <div className="space-y-3 font-mono text-[11px]">
+                  <div className="flex justify-between items-center text-zinc-400">
+                    <span>VEO Fast Generation</span>
+                    <span className="text-green-500 font-bold text-[9px] px-2 py-0.5 bg-green-500/10 rounded">ACTIVE</span>
+                  </div>
+                  <div className="flex justify-between items-center text-zinc-600">
+                    <span>Character Consistency Mapping</span>
+                    <span className="text-[9px]">QUEUED</span>
+                  </div>
+                  <div className="flex justify-between items-center text-zinc-600">
+                    <span>Fal.ai FFmpeg Stitching</span>
+                    <span className="text-[9px]">PENDING</span>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
-          <h3 className="text-4xl font-impact tracking-widest text-white uppercase mb-4">{masterProgressMsg}</h3>
-          <p className="text-zinc-500 uppercase text-xs tracking-[0.5em] animate-pulse">Rendering coherent historical segments...</p>
+
+          <style dangerouslySetInnerHTML={{
+            __html: `
+            @keyframes progress {
+              0% { width: 0%; }
+              50% { width: 70%; }
+              100% { width: 100%; }
+            }
+          `}} />
         </div>
       )}
     </div>

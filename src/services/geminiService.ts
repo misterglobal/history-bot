@@ -1,6 +1,6 @@
 import { GoogleGenAI } from "@google/genai";
 import { MODEL_TEXT, MODEL_IMAGE, SYSTEM_PROMPT, MODEL_VIDEO } from "../constants";
-import { VideoScript, Fact } from "../types";
+import { VideoScript, Fact, VideoStyle } from "../types";
 
 // Helper to strip data prefix from base64 strings
 const stripBase64 = (base64: string) => {
@@ -26,7 +26,7 @@ export const researchTopic = async (topic: string, apiKey?: string): Promise<{ f
 
   const factsText = response.text;
   const groundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
-  
+
   return {
     facts: [{ title: 'Research Findings', content: factsText || '' }],
     groundingSources: groundingChunks
@@ -98,7 +98,7 @@ export const getVideoFromTaskId = async (taskId: string, onProgress?: (msg: stri
     }
 
     const data = await response.json();
-    
+
     if (data.code !== 200) {
       throw new Error(`KIE AI API error: ${data.msg || data.errorMessage || "Unknown error"}`);
     }
@@ -109,17 +109,18 @@ export const getVideoFromTaskId = async (taskId: string, onProgress?: (msg: stri
       if (resultUrls && Array.isArray(resultUrls) && resultUrls.length > 0) {
         return resultUrls[0];
       }
-      
+
       // Try originUrls as fallback
       const originUrls = data.data?.response?.originUrls;
       if (originUrls && Array.isArray(originUrls) && originUrls.length > 0) {
         return originUrls[0];
       }
-      
+
       throw new Error("Video is ready but no URL found in response");
-    } else if (data.data?.successFlag === 0 || data.data?.errorCode) {
+    } else if (data.data?.errorCode && data.data?.errorCode !== 0) {
       throw new Error(`Video generation failed: ${data.data?.errorMessage || "Unknown error"}`);
     } else {
+      // If successFlag is 0 and no errorCode, it's still processing
       throw new Error("Video is still processing. Please wait and try again.");
     }
   } catch (err: any) {
@@ -128,31 +129,44 @@ export const getVideoFromTaskId = async (taskId: string, onProgress?: (msg: stri
 };
 
 export const generateVideo = async (
-  prompt: string, 
+  prompt: string,
   onProgress?: (msg: string) => void,
-  context?: { sceneText?: string; topic?: string; timestamp?: string },
-  apiKey?: string
+  context?: { sceneText?: string; topic?: string; timestamp?: string; style?: VideoStyle },
+  apiKey?: string,
+  onTaskId?: (taskId: string) => void
 ): Promise<{ url: string; taskId: string }> => {
   const key = getKieKey(apiKey);
   if (!key) throw new Error("KIE AI API Key is missing. Please add it in Settings.");
 
   onProgress?.("Initiating scene generation with KIE AI...");
-  
+
+  // Style-specific enhancements
+  const styleKeywords: Record<VideoStyle, string> = {
+    cinematic: "Cinematic, hyper-realistic, 8k textures, anamorphic lens flares, dramatic lighting, high-end film production.",
+    gritty: "Gritty, handheld camera, high contrast, film grain, raw historical footage look, muted colors, intense atmosphere.",
+    meme: "Meme-style, vibrant colors, slightly exaggerated character expressions, fast-paced action, high-energy visuals.",
+    watercolor: "Artistic watercolor painting style, soft edges, flowing textures, historical illustration feel, elegant and evocative.",
+    anime: "High-quality anime style, detailed backgrounds, expressive characters, dynamic action lines, cinematic cel-shaded look."
+  };
+
+  const selectedStyle = context?.style || 'cinematic';
+  const cinematicEnhancement = styleKeywords[selectedStyle];
+
   // Enhanced prompt for historical content with educational context
   let enhancedPrompt = prompt;
-  
+
   // Add context to help align video with storyboard
   if (context?.sceneText) {
     enhancedPrompt += ` This scene illustrates: "${context.sceneText}".`;
   }
-  
+
   if (context?.topic) {
     enhancedPrompt += ` Historical topic: ${context.topic}.`;
   }
-  
+
   // Add video-specific enhancements
-  enhancedPrompt += ` Cinematic historical recreation, period-accurate details, dynamic camera movement, high motion, educational and informative visual storytelling. Characters and actions must clearly convey the historical narrative.`;
-  
+  enhancedPrompt += ` ${cinematicEnhancement} Period-accurate details, dynamic camera movement, high motion, educational and informative visual storytelling. Characters and actions must clearly convey the historical narrative. Maintain consistent character appearance and environment across scenes.`;
+
   try {
     // Step 1: Submit video generation request
     const generateResponse = await fetch("https://api.kie.ai/api/v1/veo/generate", {
@@ -179,17 +193,17 @@ export const generateVideo = async (
       } catch {
         // If JSON parsing fails, use empty object
       }
-      
+
       console.error("KIE AI API Error Response:", {
         status: generateResponse.status,
         statusText: generateResponse.statusText,
         body: errorData
       });
-      
+
       if (generateResponse.status === 401) {
         throw new Error("API_KEY_EXPIRED");
       }
-      
+
       const errorMessage = errorData.message || errorData.error || errorData.detail || generateResponse.statusText;
       throw new Error(`KIE AI API error (${generateResponse.status}): ${errorMessage}`);
     }
@@ -202,56 +216,59 @@ export const generateVideo = async (
       console.error("Failed to parse KIE AI API response as JSON:", responseText);
       throw new Error(`Invalid JSON response from KIE AI API: ${responseText.substring(0, 200)}`);
     }
-    
+
     // Log the response for debugging
     console.log("KIE AI API Response:", JSON.stringify(generateData, null, 2));
-    
+
     // Check if video is returned immediately (synchronous response)
-    const immediateVideoUrl = generateData.videoUrl || generateData.video_url || generateData.url || 
-                              generateData.downloadUrl || generateData.download_url ||
-                              generateData.video || generateData.fileUrl || generateData.file_url ||
-                              (generateData.data && (generateData.data.videoUrl || generateData.data.url || generateData.data.video)) ||
-                              (generateData.result && (generateData.result.videoUrl || generateData.result.url || generateData.result.video));
-    
+    const immediateVideoUrl = generateData.videoUrl || generateData.video_url || generateData.url ||
+      generateData.downloadUrl || generateData.download_url ||
+      generateData.video || generateData.fileUrl || generateData.file_url ||
+      (generateData.data && (generateData.data.videoUrl || generateData.data.url || generateData.data.video)) ||
+      (generateData.result && (generateData.result.videoUrl || generateData.result.url || generateData.result.video));
+
+    const taskId = generateData.taskId || generateData.task_id || generateData.id ||
+      generateData.data?.taskId || generateData.data?.id ||
+      generateData.requestId || generateData.request_id ||
+      generateData.jobId || generateData.job_id ||
+      generateData.task || generateData.job ||
+      (generateData.result && (generateData.result.taskId || generateData.result.id));
+
     if (immediateVideoUrl) {
       onProgress?.("Video generated successfully!");
-      return immediateVideoUrl;
+      return { url: immediateVideoUrl, taskId: taskId || "immediate" };
     }
-    
+
     // Otherwise, we need to poll for async generation
-    const taskId = generateData.taskId || generateData.task_id || generateData.id || 
-                   generateData.data?.taskId || generateData.data?.id ||
-                   generateData.requestId || generateData.request_id ||
-                   generateData.jobId || generateData.job_id ||
-                   generateData.task || generateData.job ||
-                   (generateData.result && (generateData.result.taskId || generateData.result.id));
-    
-    if (!taskId) {
+    const finalTaskId = taskId;
+
+    if (!finalTaskId) {
       console.error("KIE AI API Response Structure:", generateData);
       throw new Error(
         `No task ID returned from KIE AI API and no immediate video URL found. ` +
         `Response structure: ${JSON.stringify(generateData).substring(0, 200)}...`
       );
     }
-    
-    console.log("Task ID extracted:", taskId);
+
+    console.log("Task ID extracted:", finalTaskId);
+    if (onTaskId) onTaskId(finalTaskId);
 
     onProgress?.("Video generation in progress...");
-    console.log("Starting polling for taskId:", taskId);
+    console.log("Starting polling for taskId:", finalTaskId);
 
     // Step 2: Poll for completion
     let status = "PENDING";
     let videoUrl = "";
     const maxAttempts = 120; // 10 minutes max (5 second intervals)
     let attempts = 0;
-    
+
     while (status !== "COMPLETED" && status !== "SUCCESS" && attempts < maxAttempts) {
       await new Promise(resolve => setTimeout(resolve, 5000)); // Poll every 5 seconds
       attempts++;
 
       try {
-        const recordInfoUrl = `https://api.kie.ai/api/v1/veo/record-info?taskId=${taskId}`;
-        
+        const recordInfoUrl = `https://api.kie.ai/api/v1/veo/record-info?taskId=${finalTaskId}`;
+
         const statusResponse = await fetch(recordInfoUrl, {
           headers: {
             "Authorization": `Bearer ${key}`
@@ -266,11 +283,12 @@ export const generateVideo = async (
 
         const statusData = await statusResponse.json();
         console.log(`Polling attempt ${attempts} - Record info response:`, JSON.stringify(statusData, null, 2));
-        
+
         if (statusData.code !== 200) {
           const errorMsg = statusData.msg || statusData.errorMessage || "Unknown error";
-          if (statusData.data?.errorMessage) {
-            throw new Error(`Video generation failed: ${statusData.data.errorMessage}`);
+          // Only throw if it's an actual KIE AI processing error (not just pending)
+          if (statusData.data?.errorCode && statusData.data?.errorCode !== 0) {
+            throw new Error(`Video generation failed: ${statusData.data.errorMessage || errorMsg}`);
           }
           onProgress?.(`Status: ${errorMsg}... (${attempts * 5}s)`);
           continue;
@@ -295,30 +313,25 @@ export const generateVideo = async (
               onProgress?.(`Video ready but URL not found... (${attempts * 5}s)`);
             }
           }
-        } else if (statusData.data?.successFlag === 0 || statusData.data?.errorCode) {
+        } else if (statusData.data?.errorCode && statusData.data?.errorCode !== 0) {
           const errorMsg = statusData.data?.errorMessage || statusData.msg || "Video generation failed";
           throw new Error(`Video generation failed: ${errorMsg}`);
         } else {
+          // successFlag is 0 or undefined, and no errorCode, so we continue polling
           const progressMsg = statusData.data?.response ? "Processing..." : "Waiting for video...";
           onProgress?.(`${progressMsg} (${attempts * 5}s)`);
         }
       } catch (pollError: any) {
-        console.warn("Polling error:", pollError);
-        if (attempts >= maxAttempts) {
-          throw new Error("Video generation timed out. Please try again.");
-        }
+        console.error("Critical error in polling loop:", pollError.message);
+        throw pollError;
       }
     }
 
     if (status !== "COMPLETED" && status !== "SUCCESS") {
-      throw new Error(`Video generation did not complete. Status: ${status}`);
+      throw new Error("Video generation timed out or failed to complete. Please try again.");
     }
 
-    if (!videoUrl) {
-      throw new Error("Video generation completed but no video URL was returned.");
-    }
-
-    return { url: videoUrl, taskId };
+    return { url: videoUrl, taskId: finalTaskId };
   } catch (err: any) {
     if (err.message === "API_KEY_EXPIRED") {
       throw new Error("API_KEY_EXPIRED");
@@ -361,7 +374,7 @@ export const stitchVideosFal = async (videoUrls: string[], falKey: string, onPro
 
   const result = await response.json();
   const requestId = result.request_id || result.requestId || result.id;
-  
+
   if (!requestId) {
     throw new Error(`No request_id returned from fal.ai. Response: ${JSON.stringify(result)}`);
   }
@@ -370,7 +383,7 @@ export const stitchVideosFal = async (videoUrls: string[], falKey: string, onPro
 
   let status = "IN_PROGRESS";
   let finalUrl = "";
-  const maxAttempts = 300; 
+  const maxAttempts = 300;
   let attempts = 0;
 
   while (status !== "COMPLETED" && status !== "SUCCESS" && attempts < maxAttempts) {
@@ -391,21 +404,21 @@ export const stitchVideosFal = async (videoUrls: string[], falKey: string, onPro
       status = pollData.status || pollData.state || "IN_PROGRESS";
 
       finalUrl = pollData.video?.url ||
-                pollData.response?.video?.url ||
-                pollData.response?.video_url || 
-                pollData.response?.url || 
-                pollData.response?.output_url ||
-                pollData.response?.merged_video_url ||
-                pollData.video_url ||
-                pollData.url ||
-                pollData.output_url;
-      
+        pollData.response?.video?.url ||
+        pollData.response?.video_url ||
+        pollData.response?.url ||
+        pollData.response?.output_url ||
+        pollData.response?.merged_video_url ||
+        pollData.video_url ||
+        pollData.url ||
+        pollData.output_url;
+
       if (finalUrl) {
         onProgress?.("✓ Video merge completed!");
         status = "COMPLETED";
         break;
       }
-      
+
       if (status === "FAILED" || status === "ERROR") {
         const errorMsg = pollData.error || pollData.message || pollData.response?.error || "Unknown error";
         throw new Error(`Video merge failed: ${errorMsg}`);
@@ -443,38 +456,52 @@ const isValidVideoUrl = (url: string): boolean => {
 };
 
 export const generateMasterVideo = async (
-  script: VideoScript, 
+  script: VideoScript,
   falKey: string,
   onProgress?: (msg: string) => void,
-  kieKey?: string
+  kieKey?: string,
+  style?: VideoStyle
 ): Promise<MasterVideoResponse> => {
   const videoUrls: string[] = [];
 
   for (let i = 0; i < script.scenes.length; i++) {
     const scene = script.scenes[i];
     onProgress?.(`Processing Scene ${i + 1} of ${script.scenes.length}...`);
-    
+
     try {
       let sceneVideoUrl = "";
       if (scene.assetUrl && scene.assetType === 'video') {
         sceneVideoUrl = scene.assetUrl;
         onProgress?.(`Using existing video for Scene ${i + 1}...`);
       } else if (scene.kieTaskId) {
-        onProgress?.(`Fetching Scene ${i + 1} video from KIE AI...`);
-        sceneVideoUrl = await getVideoFromTaskId(scene.kieTaskId, (msg) => {
-          onProgress?.(`Scene ${i + 1}: ${msg}`);
-        }, kieKey);
-      } else {
-        onProgress?.(`Rendering Scene ${i + 1}: ${scene.text.substring(0, 30)}...`);
+        onProgress?.(`Polling for already-initiated Scene ${i + 1} video...`);
+        // Use generateVideo again which handles polling correctly if prompt is same
         const result = await generateVideo(
-          scene.visualPrompt, 
+          scene.visualPrompt,
           (msg) => {
             onProgress?.(`Scene ${i + 1}: ${msg}`);
           },
           {
             sceneText: scene.text,
             topic: script.topic,
-            timestamp: scene.timestamp
+            timestamp: scene.timestamp,
+            style: style
+          },
+          kieKey
+        );
+        sceneVideoUrl = result.url;
+      } else {
+        onProgress?.(`Rendering Scene ${i + 1}: ${scene.text.substring(0, 30)}...`);
+        const result = await generateVideo(
+          scene.visualPrompt,
+          (msg) => {
+            onProgress?.(`Scene ${i + 1}: ${msg}`);
+          },
+          {
+            sceneText: scene.text,
+            topic: script.topic,
+            timestamp: scene.timestamp,
+            style: style
           },
           kieKey
         );
@@ -498,7 +525,7 @@ export const generateMasterVideo = async (
 
   onProgress?.(`✓ All ${videoUrls.length} videos ready. Preparing to stitch...`);
   onProgress?.("Stitching final cut with FFmpeg...");
-  
+
   const masterUrl = await stitchVideosFal(videoUrls, falKey, onProgress);
 
   if (!masterUrl || !isValidVideoUrl(masterUrl)) {
