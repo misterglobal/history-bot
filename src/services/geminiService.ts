@@ -460,7 +460,9 @@ export const generateMasterVideo = async (
   falKey: string,
   onProgress?: (msg: string) => void,
   kieKey?: string,
-  style?: VideoStyle
+  style?: VideoStyle,
+  onSceneUpdate?: (sceneId: string, assetUrl: string, taskId: string) => void,
+  onSceneTaskId?: (sceneId: string, taskId: string) => void
 ): Promise<MasterVideoResponse> => {
   const videoUrls: string[] = [];
 
@@ -487,9 +489,13 @@ export const generateMasterVideo = async (
             timestamp: scene.timestamp,
             style: style
           },
-          kieKey
+          kieKey,
+          (taskId) => {
+            if (onSceneTaskId) onSceneTaskId(scene.id, taskId);
+          }
         );
         sceneVideoUrl = result.url;
+        if (onSceneUpdate) onSceneUpdate(scene.id, result.url, result.taskId);
       } else {
         onProgress?.(`Rendering Scene ${i + 1}: ${scene.text.substring(0, 30)}...`);
         const result = await generateVideo(
@@ -503,9 +509,13 @@ export const generateMasterVideo = async (
             timestamp: scene.timestamp,
             style: style
           },
-          kieKey
+          kieKey,
+          (taskId) => {
+            if (onSceneTaskId) onSceneTaskId(scene.id, taskId);
+          }
         );
         sceneVideoUrl = result.url;
+        if (onSceneUpdate) onSceneUpdate(scene.id, result.url, result.taskId);
       }
 
       if (!isValidVideoUrl(sceneVideoUrl)) {

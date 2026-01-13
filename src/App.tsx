@@ -4,6 +4,8 @@ import Archives from './components/Archives';
 import { AppState, VideoScript, Fact, Scene, ArchiveItem, VideoStyle } from './types';
 import * as gemini from './services/geminiService';
 import * as archiveService from './services/archiveService';
+import * as socialService from './services/socialService';
+import { SocialMetadata } from './types';
 
 const App: React.FC = () => {
   const [currentStep, setCurrentStep] = useState<AppState>(AppState.IDLE);
@@ -28,6 +30,16 @@ const App: React.FC = () => {
   const [masterVideoUrl, setMasterVideoUrl] = useState<string | null>(null);
   const [masterProgressMsg, setMasterProgressMsg] = useState('');
 
+  // Social Sharing States
+  const [socialMetadata, setSocialMetadata] = useState<SocialMetadata | null>(null);
+  const [isGeneratingSocial, setIsGeneratingSocial] = useState(false);
+  const [isPublishing, setIsPublishing] = useState(false);
+  const [publishStatus, setPublishStatus] = useState('');
+  const [youtubeClientId, setYoutubeClientId] = useState(localStorage.getItem('YOUTUBE_CLIENT_ID') || '');
+  const [youtubeClientSecret, setYoutubeClientSecret] = useState(localStorage.getItem('YOUTUBE_CLIENT_SECRET') || '');
+  const [metaAppId, setMetaAppId] = useState(localStorage.getItem('META_APP_ID') || '');
+  const [metaAppSecret, setMetaAppSecret] = useState(localStorage.getItem('META_APP_SECRET') || '');
+
   // Env check helpers
   const envGemini = process.env.GEMINI_API_KEY || process.env.API_KEY;
   const envKie = process.env.KIEAI_API_KEY;
@@ -38,6 +50,40 @@ const App: React.FC = () => {
     loadSavedProgress();
     loadArchives();
   }, []);
+
+  // Handle Social OAuth Redirects
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get('code');
+    const state = params.get('state');
+
+    if (code && state) {
+      const handleAuth = async () => {
+        setIsPublishing(true);
+        setPublishStatus('Finalizing authorization...');
+        try {
+          if (state === 'youtube') {
+            const tokenData = await socialService.finalizeYouTubeAuth(code, youtubeClientId, youtubeClientSecret);
+            localStorage.setItem('YOUTUBE_TOKEN', tokenData.access_token);
+            setPublishStatus('YouTube Authorized!');
+          } else if (state === 'instagram') {
+            const tokenData = await socialService.finalizeInstagramAuth(code, metaAppId, metaAppSecret);
+            localStorage.setItem('INSTAGRAM_TOKEN', tokenData.accessToken);
+            localStorage.setItem('INSTAGRAM_USER_ID', tokenData.igUserId);
+            setPublishStatus('Instagram Authorized!');
+          }
+          // Clear URL params
+          window.history.replaceState({}, document.title, window.location.origin);
+        } catch (err: any) {
+          setError(`Social Auth Failed: ${err.message}`);
+        } finally {
+          setIsPublishing(false);
+          setPublishStatus('');
+        }
+      };
+      handleAuth();
+    }
+  }, [youtubeClientId, youtubeClientSecret, metaAppId, metaAppSecret]);
 
   // Save progress whenever script or scenes change
   useEffect(() => {
@@ -166,6 +212,10 @@ const App: React.FC = () => {
     localStorage.setItem('FAL_API_KEY', falKey);
     localStorage.setItem('GEMINI_API_KEY', geminiKey);
     localStorage.setItem('KIEAI_API_KEY', kieKey);
+    localStorage.setItem('YOUTUBE_CLIENT_ID', youtubeClientId);
+    localStorage.setItem('YOUTUBE_CLIENT_SECRET', youtubeClientSecret);
+    localStorage.setItem('META_APP_ID', metaAppId);
+    localStorage.setItem('META_APP_SECRET', metaAppSecret);
     setShowSettings(false);
   };
 
@@ -222,28 +272,27 @@ const App: React.FC = () => {
     const sceneIndex = script.scenes.findIndex(s => s.id === sceneId);
     if (sceneIndex === -1) return;
 
-    if (type === 'video') {
-      await checkApiKey();
-    }
-
-    // Prepare fresh scene state (clear old URLs/IDs)
-    setScript(prev => {
-      if (!prev) return null;
-      const scenes = [...prev.scenes];
-      const idx = scenes.findIndex(s => s.id === sceneId);
-      if (idx !== -1) {
-        scenes[idx] = {
-          ...scenes[idx],
-          isGenerating: true,
-          assetType: type,
-          assetUrl: undefined, // Clear stale URL
-          kieTaskId: undefined // Clear stale Task ID
-        };
-      }
-      return { ...prev, scenes };
-    });
-
     try {
+      if (type === 'video') {
+        await checkApiKey();
+      }
+
+      // Prepare fresh scene state (clear old URLs/IDs)
+      setScript(prev => {
+        if (!prev) return null;
+        const scenes = [...prev.scenes];
+        const idx = scenes.findIndex(s => s.id === sceneId);
+        if (idx !== -1) {
+          scenes[idx] = {
+            ...scenes[idx],
+            isGenerating: true,
+            assetType: type,
+            assetUrl: undefined, // Clear stale URL
+            kieTaskId: undefined // Clear stale Task ID
+          };
+        }
+        return { ...prev, scenes };
+      });
       if (type === 'image') {
         const url = await gemini.generateImage(script.scenes[sceneIndex].visualPrompt, geminiKey);
         setScript(prev => {
@@ -347,9 +396,32 @@ const App: React.FC = () => {
         falKey,
         (msg) => setMasterProgressMsg(msg),
         kieKey,
-        selectedStyle
+        selectedStyle,
+        (sceneId, assetUrl, taskId) => {
+          setScript(prev => {
+            if (!prev) return null;
+            const sceneIndex = prev.scenes.findIndex(s => s.id === sceneId);
+            if (sceneIndex === -1) return prev;
+            const updatedScenes = [...prev.scenes];
+            updatedScenes[sceneIndex] = { ...updatedScenes[sceneIndex], assetUrl, kieTaskId: taskId, isGenerating: false };
+            return { ...prev, scenes: updatedScenes };
+          });
+        },
+        (sceneId, taskId) => {
+          setScript(prev => {
+            if (!prev) return null;
+            const sceneIndex = prev.scenes.findIndex(s => s.id === sceneId);
+            if (sceneIndex === -1) return prev;
+            const updatedScenes = [...prev.scenes];
+            updatedScenes[sceneIndex] = { ...updatedScenes[sceneIndex], kieTaskId: taskId, isGenerating: true };
+            return { ...prev, scenes: updatedScenes };
+          });
+        }
       );
       setMasterVideoUrl(response.url);
+
+      // Proactively generate social metadata
+      handleSocialGen();
 
       try {
         archiveService.saveArchive(topic, script, response.url);
@@ -363,6 +435,15 @@ const App: React.FC = () => {
       if (err.message?.includes("API Key is missing")) {
         setShowSettings(true);
       }
+
+      // Reset ALL scenes to not-generating if master render fails
+      setScript(prev => {
+        if (!prev) return null;
+        return {
+          ...prev,
+          scenes: prev.scenes.map(s => ({ ...s, isGenerating: false }))
+        };
+      });
     } finally {
       setIsRenderingMaster(false);
     }
@@ -389,6 +470,77 @@ const App: React.FC = () => {
     setCurrentStep(AppState.IDLE);
     setError(null);
     clearSavedProgress();
+  };
+
+  const handleSocialGen = async () => {
+    if (!script) return;
+    setIsGeneratingSocial(true);
+    try {
+      const metadata = await socialService.generateSocialMetadata(script, geminiKey);
+      setSocialMetadata(metadata);
+    } catch (err: any) {
+      console.error("Failed to generate social metadata:", err);
+    } finally {
+      setIsGeneratingSocial(false);
+    }
+  };
+
+  const handleYouTubePublish = async () => {
+    if (!socialMetadata || !masterVideoUrl) return;
+
+    const token = localStorage.getItem('YOUTUBE_TOKEN');
+    if (!token) {
+      socialService.initiateYouTubeAuth(youtubeClientId);
+      return;
+    }
+
+    setIsPublishing(true);
+    setPublishStatus("Fetching video file...");
+    try {
+      const response = await fetch(masterVideoUrl);
+      const blob = await response.blob();
+
+      socialService.setSocialProgressCallback((msg) => setPublishStatus(msg));
+      const watchUrl = await socialService.uploadToYouTube(blob, socialMetadata, token);
+
+      setPublishStatus(`✓ Published to YouTube! ${watchUrl}`);
+    } catch (err: any) {
+      setError(`YouTube Publish Failed: ${err.message}`);
+      if (err.message.includes("401") || err.message.includes("Expired")) {
+        localStorage.removeItem('YOUTUBE_TOKEN');
+        setPublishStatus("Session expired. Please click Publish again to re-authorize.");
+      }
+    } finally {
+      setIsPublishing(false);
+    }
+  };
+
+  const handleInstagramPublish = async () => {
+    if (!socialMetadata || !masterVideoUrl) return;
+
+    const token = localStorage.getItem('INSTAGRAM_TOKEN');
+    const igUserId = localStorage.getItem('INSTAGRAM_USER_ID');
+
+    if (!token || !igUserId) {
+      socialService.initiateInstagramAuth(metaAppId);
+      return;
+    }
+
+    setIsPublishing(true);
+    setPublishStatus("Initiating Instagram Reel upload...");
+    try {
+      socialService.setSocialProgressCallback((msg) => setPublishStatus(msg));
+      const reelUrl = await socialService.uploadToInstagram(masterVideoUrl, socialMetadata.instagramCaption, token, igUserId);
+      setPublishStatus(`✓ Reel published to Instagram!`);
+    } catch (err: any) {
+      setError(`Instagram Publish Failed: ${err.message}`);
+      if (err.message.includes("OAuth") || err.message.includes("access token")) {
+        localStorage.removeItem('INSTAGRAM_TOKEN');
+        setPublishStatus("Session expired. Please click Publish again to re-authorize.");
+      }
+    } finally {
+      setIsPublishing(false);
+    }
   };
 
   return (
@@ -499,6 +651,7 @@ const App: React.FC = () => {
                       value={script.body}
                       onChange={(e) => {
                         const val = e.target.value;
+                        setMasterVideoUrl(null); // Clear master video on script body edit
                         setScript(prev => prev ? { ...prev, body: val } : null);
                       }}
                     />
@@ -532,12 +685,19 @@ const App: React.FC = () => {
                         rows={2}
                         onChange={(e) => {
                           const val = e.target.value;
+                          setMasterVideoUrl(null); // Clear master video on edit
                           setScript(prev => {
                             if (!prev) return null;
                             const scenes = [...prev.scenes];
                             const idx = scenes.findIndex(s => s.id === scene.id);
                             if (idx !== -1) {
-                              scenes[idx] = { ...scenes[idx], text: val };
+                              scenes[idx] = {
+                                ...scenes[idx],
+                                text: val,
+                                assetUrl: undefined, // Clear asset on text edit
+                                kieTaskId: undefined,
+                                isGenerating: false // Ensure edit breaks stuck states
+                              };
                             }
                             return { ...prev, scenes };
                           });
@@ -551,6 +711,7 @@ const App: React.FC = () => {
                           rows={3}
                           onChange={(e) => {
                             const val = e.target.value;
+                            setMasterVideoUrl(null); // Clear master video on edit
                             setScript(prev => {
                               if (!prev) return null;
                               const scenes = [...prev.scenes];
@@ -560,7 +721,8 @@ const App: React.FC = () => {
                                   ...scenes[idx],
                                   visualPrompt: val,
                                   assetUrl: undefined,
-                                  kieTaskId: undefined
+                                  kieTaskId: undefined,
+                                  isGenerating: false // Ensure edit breaks stuck states
                                 };
                               }
                               return { ...prev, scenes };
@@ -659,6 +821,96 @@ const App: React.FC = () => {
                 />
               </div>
 
+              {/* Social Publishing Section */}
+              <div className="bg-zinc-950/50 border border-white/5 rounded-[2rem] p-6 space-y-6">
+                <div className="flex justify-between items-center">
+                  <h3 className="font-impact tracking-widest text-lg uppercase flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-red-600 animate-pulse"></span>
+                    Publish to Social
+                  </h3>
+                  {isGeneratingSocial && (
+                    <span className="text-[10px] text-zinc-500 animate-pulse uppercase tracking-widest">Generating Metadata...</span>
+                  )}
+                </div>
+
+                {socialMetadata ? (
+                  <div className="space-y-6 animate-in fade-in slide-in-from-top-4 duration-500">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      {/* YouTube Column */}
+                      <div className="space-y-4">
+                        <div className="flex items-center gap-2 text-xs font-bold uppercase text-zinc-500">
+                          <svg className="w-4 h-4 text-red-600" fill="currentColor" viewBox="0 0 24 24"><path d="M19.615 3.184c-3.604-.246-11.631-.245-15.23 0-3.897.266-4.356 2.62-4.385 8.816.029 6.185.484 8.549 4.385 8.816 3.6.245 11.626.246 15.23 0 3.897-.266 4.356-2.62 4.385-8.816-.029-6.185-.484-8.549-4.385-8.816zm-10.615 12.816v-8l8 4-8 4z" /></svg>
+                          YouTube Shorts
+                        </div>
+                        <div className="space-y-2">
+                          <label className="text-[10px] text-zinc-600 uppercase font-bold">Video Title</label>
+                          <input
+                            className="w-full bg-zinc-900 border border-white/5 rounded-xl px-4 py-2 text-xs focus:border-red-600 outline-none transition"
+                            value={socialMetadata.youtubeTitle}
+                            onChange={(e) => setSocialMetadata({ ...socialMetadata, youtubeTitle: e.target.value })}
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <label className="text-[10px] text-zinc-600 uppercase font-bold">Description</label>
+                          <textarea
+                            className="w-full bg-zinc-900 border border-white/5 rounded-xl px-4 py-2 text-xs focus:border-red-600 outline-none transition h-24 resize-none"
+                            value={socialMetadata.youtubeDescription}
+                            onChange={(e) => setSocialMetadata({ ...socialMetadata, youtubeDescription: e.target.value })}
+                          />
+                        </div>
+                        <button
+                          disabled={isPublishing || !youtubeClientId}
+                          onClick={handleYouTubePublish}
+                          className="w-full py-3 bg-red-600 text-white font-bold rounded-xl text-[10px] uppercase hover:bg-red-500 transition disabled:opacity-50"
+                        >
+                          {isPublishing && publishStatus.includes("YouTube") ? "Processing..." : "Publish to YouTube"}
+                        </button>
+                      </div>
+
+                      {/* Instagram Column */}
+                      <div className="space-y-4">
+                        <div className="flex items-center gap-2 text-xs font-bold uppercase text-zinc-500">
+                          <svg className="w-4 h-4 text-pink-600" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zm0-2.163c-3.259 0-3.667.014-4.947.072-4.358.2-6.78 2.618-6.98 6.98-.059 1.281-.073 1.689-.073 4.948 0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98 1.281.058 1.689.072 4.948.072 3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98-1.281-.059-1.69-.073-4.949-.073zm0 5.838c-3.403 0-6.162 2.759-6.162 6.162s2.759 6.163 6.162 6.163 6.162-2.759 6.162-6.163-2.759-6.162-6.162-6.162zm0 10.162c-2.209 0-4-1.79-4-4 0-2.209 1.791-4 4-4s4 1.791 4 4c0 2.21-1.791 4-4 4zm6.406-11.845c-.796 0-1.441.645-1.441 1.44s.645 1.44 1.441 1.44c.795 0 1.439-.645 1.439-1.44s-.644-1.44-1.439-1.44z" /></svg>
+                          Instagram Reels
+                        </div>
+                        <div className="space-y-2">
+                          <label className="text-[10px] text-zinc-600 uppercase font-bold">Reel Caption</label>
+                          <textarea
+                            className="w-full bg-zinc-900 border border-white/5 rounded-xl px-4 py-2 text-xs focus:border-pink-600 outline-none transition h-[135px] resize-none"
+                            value={socialMetadata.instagramCaption}
+                            onChange={(e) => setSocialMetadata({ ...socialMetadata, instagramCaption: e.target.value })}
+                          />
+                        </div>
+                        <button
+                          disabled={isPublishing || !metaAppId}
+                          onClick={handleInstagramPublish}
+                          className="w-full py-3 bg-gradient-to-tr from-yellow-500 via-pink-600 to-purple-800 text-white font-bold rounded-xl text-[10px] uppercase hover:opacity-90 transition disabled:opacity-50"
+                        >
+                          {isPublishing && (publishStatus.includes("Instagram") || publishStatus.includes("IG")) ? "Processing..." : "Publish to Instagram"}
+                        </button>
+                      </div>
+                    </div>
+                    {publishStatus && (
+                      <div className="mt-4 p-4 bg-yellow-500/10 border border-yellow-500/20 rounded-xl flex items-center gap-3 animate-in slide-in-from-bottom-2">
+                        <div className="w-2 h-2 rounded-full bg-yellow-500 animate-ping" />
+                        <p className="text-[10px] font-impact uppercase tracking-widest text-yellow-500/80">{publishStatus}</p>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="py-10 flex flex-col items-center justify-center border-2 border-dashed border-white/5 rounded-2xl">
+                    <p className="text-zinc-600 text-xs uppercase tracking-widest mb-4">Awaiting Viral Metadata</p>
+                    <button
+                      onClick={handleSocialGen}
+                      disabled={isGeneratingSocial}
+                      className="px-6 py-2 bg-zinc-800 text-white text-[10px] font-bold uppercase rounded-lg hover:bg-zinc-700 transition"
+                    >
+                      {isGeneratingSocial ? "Thinking..." : "Regenerate Ideas"}
+                    </button>
+                  </div>
+                )}
+              </div>
+
               <div className="grid grid-cols-2 gap-4">
                 <button
                   onClick={async () => {
@@ -752,6 +1004,53 @@ const App: React.FC = () => {
                   value={falKey}
                   onChange={(e) => setFalKey(e.target.value)}
                 />
+              </div>
+
+              {/* Social Media API Keys */}
+              <div className="pt-4 border-t border-white/5 space-y-4">
+                <h4 className="text-[10px] uppercase tracking-widest text-yellow-500 font-bold">Social Media (OAuth)</h4>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-[8px] uppercase tracking-widest text-zinc-600 font-bold block mb-1">YouTube Client ID</label>
+                    <input
+                      type="text"
+                      className="w-full bg-zinc-950 border border-white/10 rounded-lg px-3 py-2 text-[10px] focus:border-yellow-500 outline-none transition"
+                      value={youtubeClientId}
+                      onChange={(e) => setYoutubeClientId(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[8px] uppercase tracking-widest text-zinc-600 font-bold block mb-1">YouTube Secret</label>
+                    <input
+                      type="password"
+                      className="w-full bg-zinc-950 border border-white/10 rounded-lg px-3 py-2 text-[10px] focus:border-yellow-500 outline-none transition"
+                      value={youtubeClientSecret}
+                      onChange={(e) => setYoutubeClientSecret(e.target.value)}
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-[8px] uppercase tracking-widest text-zinc-600 font-bold block mb-1">Meta App ID</label>
+                    <input
+                      type="text"
+                      className="w-full bg-zinc-950 border border-white/10 rounded-lg px-3 py-2 text-[10px] focus:border-yellow-500 outline-none transition"
+                      value={metaAppId}
+                      onChange={(e) => setMetaAppId(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[8px] uppercase tracking-widest text-zinc-600 font-bold block mb-1">Meta Secret</label>
+                    <input
+                      type="password"
+                      className="w-full bg-zinc-950 border border-white/10 rounded-lg px-3 py-2 text-[10px] focus:border-yellow-500 outline-none transition"
+                      value={metaAppSecret}
+                      onChange={(e) => setMetaAppSecret(e.target.value)}
+                    />
+                  </div>
+                </div>
               </div>
             </div>
 

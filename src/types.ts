@@ -1,4 +1,11 @@
 export type VideoStyle = 'cinematic' | 'gritty' | 'meme' | 'watercolor' | 'anime';
+export type SocialPlatform = 'youtube' | 'instagram';
+
+export interface SocialMetadata {
+  youtubeTitle: string;
+  youtubeDescription: string;
+  instagramCaption: string;
+}
 
 export interface Scene {
   id: string;
