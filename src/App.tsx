@@ -1,11 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import Header from './components/Header';
 import Archives from './components/Archives';
-import { AppState, VideoScript, Fact, Scene, ArchiveItem, VideoStyle } from './types';
+import { AppState, VideoScript, Fact, Scene, ArchiveItem, VideoStyle, VideoEngine, SocialMetadata } from './types';
 import * as gemini from './services/geminiService';
 import * as archiveService from './services/archiveService';
 import * as socialService from './services/socialService';
-import { SocialMetadata } from './types';
 
 const App: React.FC = () => {
   const [currentStep, setCurrentStep] = useState<AppState>(AppState.IDLE);
@@ -24,6 +23,19 @@ const App: React.FC = () => {
   const [falKey, setFalKey] = useState(localStorage.getItem('FAL_API_KEY') || '');
   const [geminiKey, setGeminiKey] = useState(localStorage.getItem('GEMINI_API_KEY') || '');
   const [kieKey, setKieKey] = useState(localStorage.getItem('KIEAI_API_KEY') || '');
+  const [cartesiaKey, setCartesiaKey] = useState(localStorage.getItem('CARTESIA_API_KEY') || '');
+  const [cartesiaVoiceId, setCartesiaVoiceId] = useState(localStorage.getItem('CARTESIA_VOICE_ID') || '86e30c1d-714b-4074-a1f2-1cb6b552fb49');
+  const [openAIKey, setOpenAIKey] = useState(localStorage.getItem('OPENAI_API_KEY') || '');
+  const [selectedEngine, setSelectedEngine] = useState<VideoEngine>(localStorage.getItem('SELECTED_ENGINE') as VideoEngine || 'veo');
+
+  // Cloudflare R2 Configuration
+  const [r2AccountId, setR2AccountId] = useState(localStorage.getItem('R2_ACCOUNT_ID') || '');
+  const [r2AccessKey, setR2AccessKey] = useState(localStorage.getItem('R2_ACCESS_KEY') || '');
+  const [r2SecretKey, setR2SecretKey] = useState(localStorage.getItem('R2_SECRET_KEY') || '');
+  const [r2BucketName, setR2BucketName] = useState(localStorage.getItem('R2_BUCKET_NAME') || '');
+  const [r2PublicUrl, setR2PublicUrl] = useState(localStorage.getItem('R2_PUBLIC_URL') || '');
+  const [testR2Status, setTestR2Status] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
+  const [testR2Error, setTestR2Error] = useState('');
 
   // Master Render States
   const [isRenderingMaster, setIsRenderingMaster] = useState(false);
@@ -208,6 +220,30 @@ const App: React.FC = () => {
     localStorage.removeItem('histori_bot_progress');
   };
 
+  const testR2Connection = async () => {
+    setTestR2Status('testing');
+    setTestR2Error('');
+    try {
+      const { uploadToR2 } = await import('./services/r2Service');
+      const testBlob = new Blob(["test"], { type: 'text/plain' });
+      await uploadToR2(testBlob, 'test_connection.txt', {
+        accountId: r2AccountId,
+        accessKey: r2AccessKey,
+        secretKey: r2SecretKey,
+        bucketName: r2BucketName,
+        publicUrl: r2PublicUrl
+      });
+      setTestR2Status('success');
+    } catch (err: any) {
+      console.error("R2 Test Connection Failed:", err);
+      // More descriptive error for common CORS issues
+      let msg = err.message;
+      if (msg === 'Failed to fetch') msg = 'CORS Block or Network Error. Check Cloudflare CORS settings.';
+      setTestR2Status('error');
+      setTestR2Error(msg);
+    }
+  };
+
   const saveSettings = () => {
     localStorage.setItem('FAL_API_KEY', falKey);
     localStorage.setItem('GEMINI_API_KEY', geminiKey);
@@ -216,6 +252,15 @@ const App: React.FC = () => {
     localStorage.setItem('YOUTUBE_CLIENT_SECRET', youtubeClientSecret);
     localStorage.setItem('META_APP_ID', metaAppId);
     localStorage.setItem('META_APP_SECRET', metaAppSecret);
+    localStorage.setItem('CARTESIA_API_KEY', cartesiaKey);
+    localStorage.setItem('CARTESIA_VOICE_ID', cartesiaVoiceId);
+    localStorage.setItem('OPENAI_API_KEY', openAIKey);
+    localStorage.setItem('SELECTED_ENGINE', selectedEngine);
+    localStorage.setItem('R2_ACCOUNT_ID', r2AccountId);
+    localStorage.setItem('R2_ACCESS_KEY', r2AccessKey);
+    localStorage.setItem('R2_SECRET_KEY', r2SecretKey);
+    localStorage.setItem('R2_BUCKET_NAME', r2BucketName);
+    localStorage.setItem('R2_PUBLIC_URL', r2PublicUrl);
     setShowSettings(false);
   };
 
@@ -252,7 +297,7 @@ const App: React.FC = () => {
 
       const factsString = result.facts.map(f => f.content).join('\n');
       const generatedScript = await gemini.generateScript(topic, factsString, geminiKey);
-      setScript(generatedScript);
+      setScript({ ...generatedScript, engine: selectedEngine });
       setCurrentStep(AppState.ASSET_GEN);
     } catch (err: any) {
       setError(err.message || 'Failed to generate content');
@@ -315,7 +360,8 @@ const App: React.FC = () => {
             sceneText: currentScene.text,
             topic: script.topic,
             timestamp: currentScene.timestamp,
-            style: selectedStyle
+            style: selectedStyle,
+            engine: currentScene.engine || script.engine || 'veo'
           },
           kieKey,
           (taskId) => {
@@ -329,6 +375,15 @@ const App: React.FC = () => {
               }
               return { ...prev, scenes };
             });
+          },
+          openAIKey,
+          falKey,
+          {
+            accountId: r2AccountId,
+            accessKey: r2AccessKey,
+            secretKey: r2SecretKey,
+            bucketName: r2BucketName,
+            publicUrl: r2PublicUrl
           }
         );
 
@@ -416,6 +471,26 @@ const App: React.FC = () => {
             updatedScenes[sceneIndex] = { ...updatedScenes[sceneIndex], kieTaskId: taskId, isGenerating: true };
             return { ...prev, scenes: updatedScenes };
           });
+        },
+        cartesiaKey,
+        cartesiaVoiceId,
+        (sceneId, audioUrl) => {
+          setScript(prev => {
+            if (!prev) return null;
+            const sceneIndex = prev.scenes.findIndex(s => s.id === sceneId);
+            if (sceneIndex === -1) return prev;
+            const updatedScenes = [...prev.scenes];
+            updatedScenes[sceneIndex] = { ...updatedScenes[sceneIndex], audioUrl };
+            return { ...prev, scenes: updatedScenes };
+          });
+        },
+        openAIKey,
+        {
+          accountId: r2AccountId,
+          accessKey: r2AccessKey,
+          secretKey: r2SecretKey,
+          bucketName: r2BucketName,
+          publicUrl: r2PublicUrl
         }
       );
       setMasterVideoUrl(response.url);
@@ -578,6 +653,24 @@ const App: React.FC = () => {
               Coherent scene-by-scene generation. Powered by <b>Veo 3.1</b> and <b>FFmpeg</b> for seamless historical storytelling.
             </p>
 
+            <div className="flex gap-4 mb-4">
+              {(['veo', 'sora2'] as VideoEngine[]).map((engine) => (
+                <button
+                  key={engine}
+                  onClick={() => {
+                    setSelectedEngine(engine);
+                    localStorage.setItem('SELECTED_ENGINE', engine);
+                  }}
+                  className={`px-6 py-2 rounded-xl text-sm font-bold uppercase tracking-widest transition-all ${selectedEngine === engine
+                    ? 'bg-white text-zinc-950 shadow-xl scale-105'
+                    : 'bg-zinc-900/50 text-zinc-500 hover:text-white border border-white/5'
+                    }`}
+                >
+                  {engine === 'veo' ? 'Veo 3.1' : 'Sora 2'}
+                </button>
+              ))}
+            </div>
+
             <div className="flex flex-wrap justify-center gap-3 mb-10 max-w-2xl">
               {(['cinematic', 'gritty', 'meme', 'watercolor', 'anime'] as VideoStyle[]).map((style) => (
                 <button
@@ -628,6 +721,13 @@ const App: React.FC = () => {
                     )}
                   </h3>
                   <div className="flex gap-2">
+                    <button
+                      onClick={() => setScript(prev => prev ? { ...prev, useNarration: !prev.useNarration } : null)}
+                      className={`text-xs px-2 py-0.5 rounded uppercase tracking-tighter transition ${script.useNarration ? 'bg-yellow-500 text-zinc-950 font-bold' : 'text-zinc-500 hover:text-white'}`}
+                      title="Toggle Voice Narration"
+                    >
+                      {script.useNarration ? 'Global Voice ON' : 'Global Voice OFF'}
+                    </button>
                     <button
                       onClick={handleManualSave}
                       className="text-xs text-zinc-500 hover:text-yellow-500 uppercase tracking-tighter transition"
@@ -745,6 +845,39 @@ const App: React.FC = () => {
                           className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${scene.assetType === 'video' && scene.assetUrl ? 'bg-yellow-500/10 text-yellow-500' : 'bg-zinc-800/50 text-zinc-400 hover:text-white'}`}
                         >
                           RENDER VIDEO
+                        </button>
+                        <button
+                          onClick={() => {
+                            setScript(prev => {
+                              if (!prev) return null;
+                              const scenes = [...prev.scenes];
+                              const idx = scenes.findIndex(s => s.id === scene.id);
+                              if (idx !== -1) {
+                                const currentEngine = scenes[idx].engine || script.engine || 'veo';
+                                scenes[idx] = { ...scenes[idx], engine: currentEngine === 'veo' ? 'sora2' : 'veo' };
+                              }
+                              return { ...prev, scenes };
+                            });
+                          }}
+                          className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${scene.engine === 'sora2' ? 'bg-white text-zinc-950 shadow-lg' : 'bg-zinc-800/50 text-zinc-400 hover:text-white'}`}
+                        >
+                          {scene.engine === 'sora2' ? 'SORA 2' : (scene.engine === 'veo' ? 'VEO 3.1' : 'ENGINE: AUTO')}
+                        </button>
+                        <button
+                          onClick={() => {
+                            setScript(prev => {
+                              if (!prev) return null;
+                              const scenes = [...prev.scenes];
+                              const idx = scenes.findIndex(s => s.id === scene.id);
+                              if (idx !== -1) {
+                                scenes[idx] = { ...scenes[idx], useNarration: !scenes[idx].useNarration };
+                              }
+                              return { ...prev, scenes };
+                            });
+                          }}
+                          className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${scene.useNarration ? 'bg-yellow-500/10 text-yellow-500' : 'bg-zinc-800/50 text-zinc-400 hover:text-white'}`}
+                        >
+                          {scene.useNarration ? 'NARRATION ON' : 'NARRATION OFF'}
                         </button>
                       </div>
                     </div>
@@ -961,12 +1094,12 @@ const App: React.FC = () => {
       {/* Settings Modal */}
       {showSettings && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-[110] flex items-center justify-center p-6">
-          <div className="bg-zinc-900 border border-white/10 rounded-3xl p-8 max-w-md w-full shadow-2xl animate-in zoom-in-95 duration-200">
+          <div className="bg-zinc-900 border border-white/10 rounded-3xl p-8 max-w-md w-full max-h-[90vh] flex flex-col shadow-2xl animate-in zoom-in-95 duration-200">
             <h3 className="text-2xl font-impact tracking-widest text-white uppercase mb-6 flex items-center gap-2">
               Engine Configuration
             </h3>
 
-            <div className="space-y-6">
+            <div className="flex-1 overflow-y-auto pr-4 space-y-6 custom-scrollbar">
               {/* Gemini API Key */}
               <div>
                 <label className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold block mb-2">Google Gemini API Key</label>
@@ -1004,6 +1137,104 @@ const App: React.FC = () => {
                   value={falKey}
                   onChange={(e) => setFalKey(e.target.value)}
                 />
+              </div>
+
+              {/* OpenAI API Key */}
+              <div>
+                <label className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold block mb-2">OpenAI API Key (Sora 2)</label>
+                <input
+                  type="password"
+                  placeholder="Paste your OpenAI key"
+                  className="w-full bg-zinc-950 border border-white/10 rounded-xl px-4 py-3 text-sm focus:border-yellow-500 outline-none transition"
+                  value={openAIKey}
+                  onChange={(e) => setOpenAIKey(e.target.value)}
+                />
+              </div>
+
+              {/* Cartesia API Key */}
+              <div>
+                <label className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold block mb-2">Cartesia API Key (TTS)</label>
+                <input
+                  type="password"
+                  placeholder="Paste your Cartesia key"
+                  className="w-full bg-zinc-950 border border-white/10 rounded-xl px-4 py-3 text-sm focus:border-yellow-500 outline-none transition"
+                  value={cartesiaKey}
+                  onChange={(e) => setCartesiaKey(e.target.value)}
+                />
+              </div>
+
+              {/* Cartesia Voice ID */}
+              <div>
+                <label className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold block mb-2">Cartesia Voice ID</label>
+                <input
+                  type="text"
+                  placeholder="e.g. 86e30c1d-714b-4074-a1f2-1cb6b552fb49"
+                  className="w-full bg-zinc-950 border border-white/10 rounded-xl px-4 py-3 text-sm focus:border-yellow-500 outline-none transition"
+                  value={cartesiaVoiceId}
+                  onChange={(e) => setCartesiaVoiceId(e.target.value)}
+                />
+              </div>
+
+              {/* Cloudflare R2 Section */}
+              <div className="pt-4 border-t border-white/5">
+                <h4 className="text-[10px] uppercase tracking-widest text-zinc-400 font-bold mb-4">Cloudflare R2 (Optional Storage)</h4>
+                <div className="space-y-4">
+                  <input
+                    type="text"
+                    placeholder="R2 Account ID"
+                    className="w-full bg-zinc-950 border border-white/10 rounded-xl px-4 py-2 text-xs outline-none"
+                    value={r2AccountId}
+                    onChange={(e) => setR2AccountId(e.target.value)}
+                  />
+                  <input
+                    type="text"
+                    placeholder="R2 Access Key ID"
+                    className="w-full bg-zinc-950 border border-white/10 rounded-xl px-4 py-2 text-xs outline-none"
+                    value={r2AccessKey}
+                    onChange={(e) => setR2AccessKey(e.target.value)}
+                  />
+                  <input
+                    type="password"
+                    placeholder="R2 Secret Access Key"
+                    className="w-full bg-zinc-950 border border-white/10 rounded-xl px-4 py-2 text-xs outline-none"
+                    value={r2SecretKey}
+                    onChange={(e) => setR2SecretKey(e.target.value)}
+                  />
+                  <input
+                    type="text"
+                    placeholder="Bucket Name"
+                    className="w-full bg-zinc-950 border border-white/10 rounded-xl px-4 py-2 text-xs outline-none"
+                    value={r2BucketName}
+                    onChange={(e) => setR2BucketName(e.target.value)}
+                  />
+                  <input
+                    type="text"
+                    placeholder="Public URL / Custom Domain"
+                    className="w-full bg-zinc-950 border border-white/10 rounded-xl px-4 py-2 text-xs outline-none"
+                    value={r2PublicUrl}
+                    onChange={(e) => setR2PublicUrl(e.target.value)}
+                  />
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={testR2Connection}
+                      disabled={testR2Status === 'testing'}
+                      className={`px-3 py-1.5 rounded-lg text-[10px] font-bold transition ${testR2Status === 'success' ? 'bg-green-600 text-white' :
+                        testR2Status === 'error' ? 'bg-red-600 text-white' :
+                          'bg-zinc-800 text-zinc-300 hover:bg-zinc-700'
+                        }`}
+                    >
+                      {testR2Status === 'testing' ? 'TESTING...' :
+                        testR2Status === 'success' ? '✓ CONNECTION SUCCESSFUL' :
+                          testR2Status === 'error' ? '⚠ CONNECTION FAILED' :
+                            'TEST CONNECTION'}
+                    </button>
+                    {testR2Status === 'error' && (
+                      <span className="text-[8px] text-red-500 font-medium truncate max-w-[200px]">
+                        {testR2Error}
+                      </span>
+                    )}
+                  </div>
+                </div>
               </div>
 
               {/* Social Media API Keys */}
@@ -1054,7 +1285,7 @@ const App: React.FC = () => {
               </div>
             </div>
 
-            <div className="mt-8 flex gap-3">
+            <div className="mt-8 flex gap-3 pt-6 border-t border-white/10">
               <button
                 onClick={saveSettings}
                 className="flex-1 bg-yellow-500 text-zinc-950 font-bold py-3 rounded-xl hover:bg-yellow-400 transition text-sm"

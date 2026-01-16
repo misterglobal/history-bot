@@ -1,6 +1,6 @@
 import { GoogleGenAI } from "@google/genai";
 import { MODEL_TEXT, MODEL_IMAGE, SYSTEM_PROMPT, MODEL_VIDEO } from "../constants";
-import { VideoScript, Fact, VideoStyle } from "../types";
+import { VideoScript, Fact, VideoStyle, VideoEngine, MasterVideoResponse, R2Config } from "../types";
 
 // Helper to strip data prefix from base64 strings
 const stripBase64 = (base64: string) => {
@@ -129,6 +129,26 @@ export const getVideoFromTaskId = async (taskId: string, onProgress?: (msg: stri
 };
 
 export const generateVideo = async (
+  prompt: string,
+  onProgress?: (msg: string) => void,
+  context?: { sceneText?: string; topic?: string; timestamp?: string; style?: VideoStyle; engine?: VideoEngine },
+  apiKey?: string,
+  onTaskId?: (taskId: string) => void,
+  openAIKey?: string,
+  falKey?: string,
+  r2Config?: R2Config
+): Promise<{ url: string; taskId: string }> => {
+  const engine = context?.engine || 'veo';
+
+  if (engine === 'sora2') {
+    return generateVideoSora(prompt, onProgress, openAIKey, onTaskId, falKey, r2Config);
+  }
+
+  // Fallback to Veo (original logic renamed to generateVideoVeo)
+  return generateVideoVeo(prompt, onProgress, context, apiKey, onTaskId);
+};
+
+export const generateVideoVeo = async (
   prompt: string,
   onProgress?: (msg: string) => void,
   context?: { sceneText?: string; topic?: string; timestamp?: string; style?: VideoStyle },
@@ -341,6 +361,137 @@ export const generateVideo = async (
 };
 
 /**
+ * Generate video using OpenAI Sora 2
+ */
+export const generateVideoSora = async (
+  prompt: string,
+  onProgress?: (msg: string) => void,
+  apiKey?: string,
+  onTaskId?: (taskId: string) => void,
+  falKey?: string,
+  r2Config?: R2Config
+): Promise<{ url: string; taskId: string }> => {
+  if (!apiKey) throw new Error("OpenAI API Key is missing. Please add it in Settings.");
+
+  onProgress?.("Initiating Sora 2 generation...");
+
+  try {
+    const formData = new FormData();
+    formData.append("model", "sora-2");
+    formData.append("prompt", prompt);
+
+    const response = await fetch("https://api.openai.com/v1/videos", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`
+      },
+      body: formData
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(`OpenAI API error (${response.status}): ${errorData.error?.message || response.statusText}`);
+    }
+
+    const data = await response.json();
+    const taskId = data.id;
+
+    if (!taskId) throw new Error("No task ID returned from Sora API.");
+    if (onTaskId) onTaskId(taskId);
+
+    onProgress?.("Sora 2 generation in progress...");
+
+    // Polling
+    let status = "pending";
+    let videoUrl = "";
+    const maxAttempts = 120;
+    let attempts = 0;
+
+    while (status !== "completed" && status !== "succeeded" && attempts < maxAttempts) {
+      await new Promise(resolve => setTimeout(resolve, 5000));
+      attempts++;
+
+      const pollRes = await fetch(`https://api.openai.com/v1/videos/${taskId}`, {
+        headers: { "Authorization": `Bearer ${apiKey}` }
+      });
+
+      if (!pollRes.ok) continue;
+
+      const pollData = await pollRes.json();
+      status = pollData.status?.toLowerCase() || "pending";
+
+      if (status === "completed" || status === "succeeded") {
+        const contentUrl = `https://api.openai.com/v1/videos/${taskId}/content`;
+        let soraBlob: Blob | undefined;
+
+        try {
+          onProgress?.("Finalizing Sora video content...");
+          console.log("Fetching Sora content from:", contentUrl);
+
+          let blobRes;
+          try {
+            blobRes = await fetch(contentUrl, {
+              headers: { "Authorization": `Bearer ${apiKey}` }
+            });
+          } catch (fetchErr: any) {
+            console.error("OpenAI Content Fetch Failed:", fetchErr);
+            throw new Error(`OpenAI CORS/Network Error: ${fetchErr.message}. Are you in a supported region?`);
+          }
+
+          if (!blobRes.ok) throw new Error(`Fetch failed (${blobRes.status}): ${blobRes.statusText}`);
+
+          soraBlob = await blobRes.blob();
+          console.log("Successfully fetched Sora blob:", soraBlob.size, "bytes");
+          const fileName = `sora_${taskId}.mp4`;
+
+          if (r2Config && r2Config.accountId && r2Config.publicUrl) {
+            onProgress?.("Storing video in Cloudflare R2...");
+            try {
+              const { uploadToR2 } = await import('./r2Service');
+              videoUrl = await uploadToR2(soraBlob, fileName, r2Config);
+            } catch (r2Err: any) {
+              console.error("R2 Upload Error:", r2Err);
+              onProgress?.(`⚠ R2 Upload failed: ${r2Err.message}.`);
+            }
+          }
+
+          if (!videoUrl && soraBlob) {
+            videoUrl = URL.createObjectURL(soraBlob);
+            onProgress?.("⚠ Local Preview only - Stitching will fail without working R2 storage.");
+          }
+        } catch (resolveErr: any) {
+          console.error("Storage/Finalize Error:", resolveErr);
+
+          // Fallback Strategy
+          if (soraBlob) {
+            videoUrl = URL.createObjectURL(soraBlob);
+            onProgress?.(`⚠ Storage Error: ${resolveErr.message}. Using local preview.`);
+          } else {
+            // If we couldn't even get the blob, try the pollData URL
+            videoUrl = pollData.video?.url || pollData.url || contentUrl;
+            onProgress?.(`⚠ Finalize failed: ${resolveErr.message}. Using direct link.`);
+          }
+          console.warn("Sora fallback URL applied:", videoUrl);
+        }
+
+        break;
+      }
+
+      if (status === "failed") {
+        throw new Error(`Sora generation failed: ${pollData.error?.message || "Unknown error"}`);
+      }
+
+      onProgress?.(`Sora 2 processing... (${attempts * 5}s)`);
+    }
+
+    if (!videoUrl) throw new Error("Sora generation timed out or failed to return a URL.");
+    return { url: videoUrl, taskId };
+  } catch (err: any) {
+    throw new Error(`Sora Error: ${err.message}`);
+  }
+};
+
+/**
  * Stitch multiple video URLs together using fal.ai FFmpeg API
  */
 export const stitchVideosFal = async (videoUrls: string[], falKey: string, onProgress?: (msg: string) => void): Promise<string> => {
@@ -396,6 +547,11 @@ export const stitchVideosFal = async (videoUrls: string[], falKey: string, onPro
       });
 
       if (!pollRes.ok) {
+        if (pollRes.status === 422) {
+          const failMsg = await pollRes.text();
+          console.error("Fal.ai 422 Error details:", failMsg);
+          throw new Error(`Fal.ai reported the request as unprocessable (422). Possible cause: inaccessible input URLs. Details: ${failMsg}`);
+        }
         if (attempts >= maxAttempts) throw new Error("Video merge timed out. Please try again.");
         continue;
       }
@@ -441,12 +597,98 @@ export const stitchVideosFal = async (videoUrls: string[], falKey: string, onPro
   return finalUrl;
 };
 
-export interface MasterVideoResponse {
-  url: string;
-}
+/**
+ * Mix audio and video using fal.ai FFmpeg API
+ */
+export const mixAudioVideoFal = async (videoUrl: string, audioUrl: string, falKey: string, onProgress?: (msg: string) => void): Promise<string> => {
+  if (!videoUrl || !audioUrl) throw new Error("Video and audio URLs are required for mixing.");
+  if (!falKey) throw new Error("FAL_API_KEY is required for mixing. Please enter it in Settings.");
+
+  onProgress?.("Submitting audio-video mix request to fal.ai...");
+
+  const response = await fetch("https://queue.fal.run/fal-ai/ffmpeg-api/merge-audio-video", {
+    method: "POST",
+    headers: {
+      "Authorization": `Key ${falKey}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      video_url: videoUrl,
+      audio_url: audioUrl
+    })
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Fal.ai API error (${response.status}): ${errorText}`);
+  }
+
+  const result = await response.json();
+  const requestId = result.request_id || result.requestId || result.id;
+
+  if (!requestId) {
+    throw new Error(`No request_id returned from fal.ai.`);
+  }
+
+  onProgress?.(`Audio-video mixing in progress (Request ${requestId})...`);
+
+  let status = "IN_PROGRESS";
+  let finalUrl = "";
+  const maxAttempts = 300; // Increase timeout to 10 minutes
+  let attempts = 0;
+
+  while (status !== "COMPLETED" && status !== "SUCCESS" && attempts < maxAttempts) {
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    attempts++;
+
+    try {
+      const pollRes = await fetch(`https://queue.fal.run/fal-ai/ffmpeg-api/requests/${requestId}`, {
+        headers: { "Authorization": `Key ${falKey}` }
+      });
+
+      if (!pollRes.ok) {
+        console.warn(`Mix polling returned ${pollRes.status}`);
+        continue;
+      }
+
+      const pollData = await pollRes.json();
+      status = pollData.status || pollData.state || "IN_PROGRESS";
+
+      const currentUrl = pollData.video?.url ||
+        pollData.response?.video?.url ||
+        pollData.response?.video_url ||
+        pollData.url ||
+        pollData.response?.url ||
+        pollData.merged_video_url ||
+        pollData.response?.merged_video_url;
+
+      if (currentUrl) {
+        onProgress?.("✓ Audio-video mix completed!");
+        finalUrl = currentUrl;
+        status = "COMPLETED";
+        break;
+      }
+
+      if (status === "FAILED" || status === "ERROR") {
+        throw new Error(`Audio-video mix failed: ${pollData.error || pollData.message || "Unknown error"}`);
+      }
+
+      onProgress?.(`Mixing audio & video... (${attempts * 2}s)`);
+    } catch (pollError: any) {
+      console.error("Poll error in mix:", pollError);
+      if (attempts >= maxAttempts) throw new Error("Audio-video mix timed out.");
+    }
+  }
+
+  if (!finalUrl) throw new Error(`Audio-video mix finished with status ${status} but no URL was found.`);
+  return finalUrl;
+};
+
+
 
 const isValidVideoUrl = (url: string): boolean => {
   if (!url || typeof url !== 'string' || url.trim() === '') return false;
+  if (url.startsWith('blob:')) return true; // Allow local blobs during preview phases
   try {
     const urlObj = new URL(url);
     return urlObj.protocol === 'http:' || urlObj.protocol === 'https:';
@@ -462,7 +704,12 @@ export const generateMasterVideo = async (
   kieKey?: string,
   style?: VideoStyle,
   onSceneUpdate?: (sceneId: string, assetUrl: string, taskId: string) => void,
-  onSceneTaskId?: (sceneId: string, taskId: string) => void
+  onSceneTaskId?: (sceneId: string, taskId: string) => void,
+  cartesiaKey?: string,
+  voiceId?: string,
+  onAudioUpdate?: (sceneId: string, audioUrl: string) => void,
+  openAIKey?: string,
+  r2Config?: R2Config
 ): Promise<MasterVideoResponse> => {
   const videoUrls: string[] = [];
 
@@ -487,12 +734,16 @@ export const generateMasterVideo = async (
             sceneText: scene.text,
             topic: script.topic,
             timestamp: scene.timestamp,
-            style: style
+            style: style,
+            engine: scene.engine || script.engine || 'veo'
           },
           kieKey,
           (taskId) => {
             if (onSceneTaskId) onSceneTaskId(scene.id, taskId);
-          }
+          },
+          openAIKey,
+          falKey,
+          r2Config
         );
         sceneVideoUrl = result.url;
         if (onSceneUpdate) onSceneUpdate(scene.id, result.url, result.taskId);
@@ -507,12 +758,16 @@ export const generateMasterVideo = async (
             sceneText: scene.text,
             topic: script.topic,
             timestamp: scene.timestamp,
-            style: style
+            style: style,
+            engine: scene.engine || script.engine || 'veo'
           },
           kieKey,
           (taskId) => {
             if (onSceneTaskId) onSceneTaskId(scene.id, taskId);
-          }
+          },
+          openAIKey,
+          falKey,
+          r2Config
         );
         sceneVideoUrl = result.url;
         if (onSceneUpdate) onSceneUpdate(scene.id, result.url, result.taskId);
@@ -522,8 +777,36 @@ export const generateMasterVideo = async (
         throw new Error(`Invalid video URL format for Scene ${i + 1}`);
       }
 
-      videoUrls.push(sceneVideoUrl);
-      onProgress?.(`✓ Scene ${i + 1} video ready: ${sceneVideoUrl.substring(0, 50)}...`);
+      let finalSceneUrl = sceneVideoUrl;
+
+      // Handle narration if enabled for this scene (or globally as fallback)
+      if (scene.useNarration || script.useNarration) {
+        if (!cartesiaKey || !voiceId) {
+          onProgress?.(`⚠ Narration skipped for Scene ${i + 1}: Missing Cartesia Key/Voice ID in Settings.`);
+        } else {
+          onProgress?.(`Generating narration for Scene ${i + 1}...`);
+          try {
+            const { generateNarration, uploadToFal } = await import('./voiceService');
+            const audioBlob = await generateNarration(scene.text, voiceId, cartesiaKey);
+            onProgress?.(`Uploading narration to Fal.ai storage...`);
+            const audioUrl = await uploadToFal(audioBlob, falKey);
+
+            if (onAudioUpdate) onAudioUpdate(scene.id, audioUrl);
+
+            onProgress?.(`Mixing audio and video for Scene ${i + 1}...`);
+            finalSceneUrl = await mixAudioVideoFal(sceneVideoUrl, audioUrl, falKey, (msg) => {
+              onProgress?.(`Scene ${i + 1} Mix: ${msg}`);
+            });
+            onProgress?.(`✓ Narration integrated into Scene ${i + 1}.`);
+          } catch (audioError: any) {
+            console.error(`Narration failed for Scene ${i + 1}:`, audioError);
+            onProgress?.(`⚠ Narration failed for Scene ${i + 1}: ${audioError.message}. Using original video.`);
+          }
+        }
+      }
+
+      videoUrls.push(finalSceneUrl);
+      onProgress?.(`✓ Scene ${i + 1} ready: ${finalSceneUrl.substring(0, 50)}...`);
     } catch (error: any) {
       const errorMsg = error.message || 'Unknown error';
       onProgress?.(`✗ Scene ${i + 1} failed: ${errorMsg}`);
