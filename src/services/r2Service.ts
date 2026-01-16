@@ -1,5 +1,3 @@
-import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
-
 export interface R2Config {
     accountId: string;
     accessKey: string;
@@ -9,44 +7,41 @@ export interface R2Config {
 }
 
 /**
- * Upload a blob to Cloudflare R2
+ * Upload a blob to Cloudflare R2 using a presigned URL from the server.
+ * This keeps R2 credentials on the server and simplifies CORS.
  */
 export const uploadToR2 = async (blob: Blob, fileName: string, config: R2Config): Promise<string> => {
-    if (!config.accountId || !config.accessKey || !config.secretKey || !config.bucketName) {
-        throw new Error("Missing R2 configuration in Settings.");
-    }
+    const contentType = blob.type || "video/mp4";
 
-    const s3 = new S3Client({
-        region: "auto",
-        endpoint: `https://${config.accountId}.r2.cloudflarestorage.com`,
-        credentials: {
-            accessKeyId: config.accessKey,
-            secretAccessKey: config.secretKey,
-        },
-        forcePathStyle: true, // Often needed for R2 in browser
+    console.log(`Requesting presigned URL for "${fileName}" (${contentType})...`);
+
+    // Step 1: Get presigned URL from our API
+    const presignResponse = await fetch('/api/presign', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filename: fileName, contentType }),
     });
 
-    console.log(`Starting R2 upload to bucket "${config.bucketName}" as "${fileName}"...`);
+    if (!presignResponse.ok) {
+        const errorData = await presignResponse.json().catch(() => ({}));
+        throw new Error(errorData.error || `Failed to get presigned URL: ${presignResponse.status}`);
+    }
 
-    const arrayBuffer = await blob.arrayBuffer();
-    const body = new Uint8Array(arrayBuffer);
+    const { presignedUrl, objectUrl } = await presignResponse.json();
 
-    const command = new PutObjectCommand({
-        Bucket: config.bucketName,
-        Key: fileName,
-        Body: body,
-        ContentType: blob.type || "video/mp4",
+    console.log(`Uploading to presigned URL...`);
+
+    // Step 2: Upload directly to R2 using the presigned URL
+    const uploadResponse = await fetch(presignedUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': contentType },
+        body: blob,
     });
 
-    await s3.send(command);
-
-    // Return the public URL
-    let publicUrl = config.publicUrl;
-    if (!publicUrl.startsWith('http')) {
-        publicUrl = `https://${publicUrl}`;
+    if (!uploadResponse.ok) {
+        throw new Error(`R2 upload failed: ${uploadResponse.status} ${uploadResponse.statusText}`);
     }
-    const baseUrl = publicUrl.endsWith('/') ? publicUrl : `${publicUrl}/`;
-    const finalUrl = `${baseUrl}${fileName}`;
-    console.log("R2 Upload successful. Final URL:", finalUrl);
-    return finalUrl;
+
+    console.log("R2 Upload successful. Final URL:", objectUrl);
+    return objectUrl;
 };
