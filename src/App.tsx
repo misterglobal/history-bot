@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import Header from './components/Header';
 import Archives from './components/Archives';
-import { AppState, VideoScript, Fact, Scene, ArchiveItem, VideoStyle, VideoEngine, SocialMetadata } from './types';
+import { AppState, VideoScript, Fact, Scene, ArchiveItem, VideoStyle, VideoEngine, SocialMetadata, Persona } from './types';
 import * as gemini from './services/geminiService';
 import * as archiveService from './services/archiveService';
 import * as socialService from './services/socialService';
+import { PERSONAS } from './constants';
 
 const App: React.FC = () => {
   const [currentStep, setCurrentStep] = useState<AppState>(AppState.IDLE);
@@ -17,6 +18,7 @@ const App: React.FC = () => {
   const [videoProgress, setVideoProgress] = useState<Record<string, string>>({});
   const [archives, setArchives] = useState<ArchiveItem[]>([]);
   const [selectedStyle, setSelectedStyle] = useState<VideoStyle>('cinematic');
+  const [selectedPersona, setSelectedPersona] = useState<Persona>('sarcastic_teacher');
 
   // Settings & Config
   const [showSettings, setShowSettings] = useState(false);
@@ -296,7 +298,7 @@ const App: React.FC = () => {
       setStatusMessage('Analyzing ironies and bizarre details...');
 
       const factsString = result.facts.map(f => f.content).join('\n');
-      const generatedScript = await gemini.generateScript(topic, factsString, geminiKey);
+      const generatedScript = await gemini.generateScript(topic, factsString, geminiKey, selectedPersona);
       setScript({ ...generatedScript, engine: selectedEngine });
       setCurrentStep(AppState.ASSET_GEN);
     } catch (err: any) {
@@ -667,6 +669,22 @@ const App: React.FC = () => {
                     }`}
                 >
                   {engine === 'veo' ? 'Veo 3.1' : 'Sora 2'}
+                </button>
+              ))}
+            </div>
+
+            <div className="flex gap-4 mb-4">
+              {PERSONAS.map((persona) => (
+                <button
+                  key={persona.id}
+                  onClick={() => setSelectedPersona(persona.id)}
+                  className={`px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-widest transition-all ${selectedPersona === persona.id
+                    ? 'bg-blue-600 text-white shadow-xl scale-105'
+                    : 'bg-zinc-900/50 text-zinc-500 hover:text-white border border-white/5'
+                    }`}
+                  title={persona.description}
+                >
+                  {persona.name}
                 </button>
               ))}
             </div>

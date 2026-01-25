@@ -1,6 +1,6 @@
 import { GoogleGenAI } from "@google/genai";
-import { MODEL_TEXT, MODEL_IMAGE, SYSTEM_PROMPT, MODEL_VIDEO } from "../constants";
-import { VideoScript, Fact, VideoStyle, VideoEngine, MasterVideoResponse, R2Config } from "../types";
+import { MODEL_TEXT, MODEL_IMAGE, getSystemPrompt, MODEL_VIDEO } from "../constants";
+import { VideoScript, Fact, VideoStyle, VideoEngine, MasterVideoResponse, R2Config, Persona } from "../types";
 
 // Helper to strip data prefix from base64 strings
 const stripBase64 = (base64: string) => {
@@ -33,7 +33,7 @@ export const researchTopic = async (topic: string, apiKey?: string): Promise<{ f
   };
 };
 
-export const generateScript = async (topic: string, facts: string, apiKey?: string): Promise<VideoScript> => {
+export const generateScript = async (topic: string, facts: string, apiKey?: string, persona?: Persona): Promise<VideoScript> => {
   const key = getGeminiKey(apiKey);
   if (!key) throw new Error("Gemini API Key is missing. Please add it in Settings.");
 
@@ -42,7 +42,7 @@ export const generateScript = async (topic: string, facts: string, apiKey?: stri
     model: MODEL_TEXT,
     contents: `Topic: ${topic}\nFacts: ${facts}\nGenerate a high-retention viral script.`,
     config: {
-      systemInstruction: SYSTEM_PROMPT,
+      systemInstruction: getSystemPrompt(persona),
       responseMimeType: "application/json",
     },
   });

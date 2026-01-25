@@ -1,6 +1,14 @@
 export type VideoStyle = 'cinematic' | 'gritty' | 'meme' | 'watercolor' | 'anime';
 export type VideoEngine = 'veo' | 'sora2';
 export type SocialPlatform = 'youtube' | 'instagram';
+export type Persona = 'sarcastic_teacher' | 'gen_z_explainer' | 'noir_detective' | 'alien_observer';
+
+export interface PersonaDefinition {
+  id: Persona;
+  name: string;
+  description: string;
+  systemPromptSnippet: string;
+}
 
 export interface SocialMetadata {
   youtubeTitle: string;
