@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { RefreshCcw, Video, Mic, Edit2, Play, Volume2, Upload } from 'lucide-react';
 import Header from './components/Header';
 import Archives from './components/Archives';
 import { AppState, VideoScript, Fact, Scene, ArchiveItem, VideoStyle, VideoEngine, SocialMetadata, Persona } from './types';
@@ -8,7 +9,11 @@ import * as socialService from './services/socialService';
 import { PERSONAS } from './constants';
 
 const App: React.FC = () => {
+  // ... (previous state declarations - lines 11-54 remain same, but I can't skip lines easily with replace_file_content unless I match context properly. I will try to match the top block first to update imports)
   const [currentStep, setCurrentStep] = useState<AppState>(AppState.IDLE);
+  // ...
+  // I will target the imports specifically first.
+
   const [topic, setTopic] = useState('');
   const [researchData, setResearchData] = useState<{ facts: Fact[], groundingSources: any[] } | null>(null);
   const [script, setScript] = useState<VideoScript | null>(null);
@@ -425,6 +430,92 @@ const App: React.FC = () => {
         }
         return { ...prev, scenes };
       });
+
+      setVideoProgress(prev => {
+        const next = { ...prev };
+        delete next[sceneId];
+        return next;
+      });
+    }
+  };
+
+  const handleRegenerateAudio = async (sceneId: string) => {
+    if (!script) return;
+    if (!cartesiaKey || !falKey) {
+      setError("Please ensure Cartesia and Fal.ai API keys are set for audio regeneration.");
+      setShowSettings(true);
+      return;
+    }
+
+    const sceneIndex = script.scenes.findIndex(s => s.id === sceneId);
+    if (sceneIndex === -1) return;
+    const scene = script.scenes[sceneIndex];
+
+    try {
+      setScript(prev => {
+        if (!prev) return null;
+        const scenes = [...prev.scenes];
+        const idx = scenes.findIndex(s => s.id === sceneId);
+        if (idx !== -1) {
+          scenes[idx] = { ...scenes[idx], isGeneratingAudio: true };
+        }
+        return { ...prev, scenes };
+      });
+
+      // 1. Generate Narration
+      const { generateNarration, uploadToFal } = await import('./services/voiceService');
+      const audioBlob = await generateNarration(scene.text, cartesiaVoiceId, cartesiaKey);
+      setVideoProgress(prev => ({ ...prev, [sceneId]: "Uploading audio..." }));
+
+      // 2. Upload to Fal
+      const audioUrl = await uploadToFal(audioBlob, falKey);
+
+      // 3. Update State with new Audio URL
+      setScript(prev => {
+        if (!prev) return null;
+        const scenes = [...prev.scenes];
+        const idx = scenes.findIndex(s => s.id === sceneId);
+        if (idx !== -1) {
+          scenes[idx] = {
+            ...scenes[idx],
+            audioUrl: audioUrl,
+            isGeneratingAudio: false
+          };
+        }
+        return { ...prev, scenes };
+      });
+
+      // 4. If video exists, remix it
+      if (scene.assetUrl && scene.assetType === 'video') {
+        setVideoProgress(prev => ({ ...prev, [sceneId]: "Remixing audio & video..." }));
+        const mixedUrl = await gemini.mixAudioVideoFal(scene.assetUrl, audioUrl, falKey);
+
+        setScript(prev => {
+          if (!prev) return null;
+          const scenes = [...prev.scenes];
+          const idx = scenes.findIndex(s => s.id === sceneId);
+          if (idx !== -1) {
+            scenes[idx] = {
+              ...scenes[idx],
+              assetUrl: mixedUrl
+            };
+          }
+          return { ...prev, scenes };
+        });
+      }
+
+      setMasterVideoUrl(null); // Invalidate master
+    } catch (err: any) {
+      setError(`Audio Regen Failed: ${err.message}`);
+      setScript(prev => {
+        if (!prev) return null;
+        const scenes = [...prev.scenes];
+        const idx = scenes.findIndex(s => s.id === sceneId);
+        if (idx !== -1) {
+          scenes[idx] = { ...scenes[idx], isGeneratingAudio: false };
+        }
+        return { ...prev, scenes };
+      });
     } finally {
       setVideoProgress(prev => {
         const next = { ...prev };
@@ -433,6 +524,8 @@ const App: React.FC = () => {
       });
     }
   };
+
+
 
   const handleFullRender = async () => {
     if (!script) return;
@@ -849,21 +942,35 @@ const App: React.FC = () => {
                         />
                       </div>
 
-                      <div className="flex gap-2 pt-2">
+                      <div className="flex flex-wrap gap-2 pt-2">
                         <button
-                          disabled={scene.isGenerating}
-                          onClick={() => handleGenerateAsset(scene.id, 'image')}
-                          className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${scene.assetType === 'image' && scene.assetUrl ? 'bg-yellow-500/10 text-yellow-500' : 'bg-zinc-800/50 text-zinc-400 hover:text-white'}`}
-                        >
-                          DRAFT IMAGE
-                        </button>
-                        <button
-                          disabled={scene.isGenerating}
                           onClick={() => handleGenerateAsset(scene.id, 'video')}
-                          className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${scene.assetType === 'video' && scene.assetUrl ? 'bg-yellow-500/10 text-yellow-500' : 'bg-zinc-800/50 text-zinc-400 hover:text-white'}`}
+                          disabled={scene.isGenerating || scene.isGeneratingAudio}
+                          className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider border transition-all ${scene.isGenerating
+                            ? 'bg-yellow-500/20 border-yellow-500 text-yellow-500 animate-pulse'
+                            : 'bg-black/40 border-white/10 text-zinc-400 hover:text-white hover:border-white/30'
+                            }`}
+                          title="Regenerate Video from Visual Prompt"
                         >
-                          RENDER VIDEO
+                          <RefreshCcw size={12} className={scene.isGenerating ? "animate-spin" : ""} />
+                          {scene.isGenerating ? "Gen..." : "Re-Roll Video"}
                         </button>
+
+                        <button
+                          onClick={() => handleRegenerateAudio(scene.id)}
+                          disabled={scene.isGenerating || scene.isGeneratingAudio || !script.useNarration}
+                          className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider border transition-all ${scene.isGeneratingAudio
+                            ? 'bg-blue-500/20 border-blue-500 text-blue-400 animate-pulse'
+                            : !script.useNarration
+                              ? 'opacity-30 cursor-not-allowed border-transparent text-zinc-600'
+                              : 'bg-black/40 border-white/10 text-zinc-400 hover:text-white hover:border-white/30'
+                            }`}
+                          title="Regenerate Audio from Text"
+                        >
+                          <Mic size={12} />
+                          {scene.isGeneratingAudio ? "Dubbing..." : "Dub Audio"}
+                        </button>
+
                         <button
                           onClick={() => {
                             setScript(prev => {
@@ -877,25 +984,10 @@ const App: React.FC = () => {
                               return { ...prev, scenes };
                             });
                           }}
-                          className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${scene.engine === 'sora2' ? 'bg-white text-zinc-950 shadow-lg' : 'bg-zinc-800/50 text-zinc-400 hover:text-white'}`}
+                          className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider border transition-all ${scene.engine === 'sora2' ? 'bg-white text-zinc-950 border-white' : 'bg-black/40 border-white/10 text-zinc-500 hover:text-white hover:border-white/30'}`}
                         >
-                          {scene.engine === 'sora2' ? 'SORA 2' : (scene.engine === 'veo' ? 'VEO 3.1' : 'ENGINE: AUTO')}
-                        </button>
-                        <button
-                          onClick={() => {
-                            setScript(prev => {
-                              if (!prev) return null;
-                              const scenes = [...prev.scenes];
-                              const idx = scenes.findIndex(s => s.id === scene.id);
-                              if (idx !== -1) {
-                                scenes[idx] = { ...scenes[idx], useNarration: !scenes[idx].useNarration };
-                              }
-                              return { ...prev, scenes };
-                            });
-                          }}
-                          className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${scene.useNarration ? 'bg-yellow-500/10 text-yellow-500' : 'bg-zinc-800/50 text-zinc-400 hover:text-white'}`}
-                        >
-                          {scene.useNarration ? 'NARRATION ON' : 'NARRATION OFF'}
+                          <Video size={12} />
+                          {scene.engine === 'sora2' ? 'SORA 2' : 'VEO 3.1'}
                         </button>
                       </div>
                     </div>

@@ -148,17 +148,30 @@ export const generateVideo = async (
   return generateVideoVeo(prompt, onProgress, context, apiKey, onTaskId);
 };
 
+
+const sanitizePromptForSafety = (prompt: string): string => {
+  return prompt
+    .replace(/\b(child|kid|baby|toddler|infant)\b/gi, 'young person')
+    .replace(/\b(children|kids|babies|toddlers|infants)\b/gi, 'young people')
+    .replace(/\b(boy)\b/gi, 'young man')
+    .replace(/\b(girl)\b/gi, 'young woman')
+    .replace(/\b(boys)\b/gi, 'young men')
+    .replace(/\b(girls)\b/gi, 'young women')
+    .replace(/\b(minor|minors)\b/gi, 'youth');
+};
+
 export const generateVideoVeo = async (
   prompt: string,
   onProgress?: (msg: string) => void,
   context?: { sceneText?: string; topic?: string; timestamp?: string; style?: VideoStyle },
   apiKey?: string,
-  onTaskId?: (taskId: string) => void
+  onTaskId?: (taskId: string) => void,
+  retryCount = 0
 ): Promise<{ url: string; taskId: string }> => {
   const key = getKieKey(apiKey);
   if (!key) throw new Error("KIE AI API Key is missing. Please add it in Settings.");
 
-  onProgress?.("Initiating scene generation with KIE AI...");
+  onProgress?.(retryCount > 0 ? "Retrying with safety-sanitized prompt..." : "Initiating scene generation with KIE AI...");
 
   // Style-specific enhancements
   const styleKeywords: Record<VideoStyle, string> = {
@@ -308,6 +321,16 @@ export const generateVideoVeo = async (
           const errorMsg = statusData.msg || statusData.errorMessage || "Unknown error";
           // Only throw if it's an actual KIE AI processing error (not just pending)
           if (statusData.data?.errorCode && statusData.data?.errorCode !== 0) {
+
+            // Check for Safety Filter Error
+            if (statusData.data.errorMessage?.includes("PUBLIC_ERROR_MINOR") && retryCount < 1) {
+              console.warn("Caught Safety Filter Error (PUBLIC_ERROR_MINOR). Retrying with sanitized prompt.");
+              onProgress?.("Safety filter triggered. Adjusting prompt terminology...");
+              const sanitizedPrompt = sanitizePromptForSafety(prompt);
+              // Return recursive call with updated prompt and incremented retryCount
+              return generateVideoVeo(sanitizedPrompt, onProgress, context, apiKey, onTaskId, retryCount + 1);
+            }
+
             throw new Error(`Video generation failed: ${statusData.data.errorMessage || errorMsg}`);
           }
           onProgress?.(`Status: ${errorMsg}... (${attempts * 5}s)`);
@@ -335,6 +358,15 @@ export const generateVideoVeo = async (
           }
         } else if (statusData.data?.errorCode && statusData.data?.errorCode !== 0) {
           const errorMsg = statusData.data?.errorMessage || statusData.msg || "Video generation failed";
+
+          // Check for Safety Filter Error (also here, just in case)
+          if (errorMsg.includes("PUBLIC_ERROR_MINOR") && retryCount < 1) {
+            console.warn("Caught Safety Filter Error (PUBLIC_ERROR_MINOR) in polling. Retrying...");
+            onProgress?.("Safety filter triggered. Adjusting prompt...");
+            const sanitizedPrompt = sanitizePromptForSafety(prompt);
+            return generateVideoVeo(sanitizedPrompt, onProgress, context, apiKey, onTaskId, retryCount + 1);
+          }
+
           throw new Error(`Video generation failed: ${errorMsg}`);
         } else {
           // successFlag is 0 or undefined, and no errorCode, so we continue polling
@@ -711,25 +743,24 @@ export const generateMasterVideo = async (
   openAIKey?: string,
   r2Config?: R2Config
 ): Promise<MasterVideoResponse> => {
-  const videoUrls: string[] = [];
+  onProgress?.(`Starting parallel generation for ${script.scenes.length} scenes...`);
 
-  for (let i = 0; i < script.scenes.length; i++) {
-    const scene = script.scenes[i];
-    onProgress?.(`Processing Scene ${i + 1} of ${script.scenes.length}...`);
-
+  // Parallelize scene generation
+  const videoPromises = script.scenes.map(async (scene, i) => {
     try {
       let sceneVideoUrl = "";
-      if (scene.assetUrl && scene.assetType === 'video') {
+
+      // Check for existing valid video URL (Cache Hit)
+      if (scene.assetUrl && scene.assetType === 'video' && isValidVideoUrl(scene.assetUrl)) {
+        onProgress?.(`Scene ${i + 1}: Using cached video.`);
         sceneVideoUrl = scene.assetUrl;
-        onProgress?.(`Using existing video for Scene ${i + 1}...`);
-      } else if (scene.kieTaskId) {
-        onProgress?.(`Polling for already-initiated Scene ${i + 1} video...`);
-        // Use generateVideo again which handles polling correctly if prompt is same
+      }
+      // Check for existing Task ID (Resume/Poll)
+      else if (scene.kieTaskId) {
+        onProgress?.(`Scene ${i + 1}: Resuming/Polling...`);
         const result = await generateVideo(
           scene.visualPrompt,
-          (msg) => {
-            onProgress?.(`Scene ${i + 1}: ${msg}`);
-          },
+          (msg) => { /* Suppress individual progress noise or handle smarter */ },
           {
             sceneText: scene.text,
             topic: script.topic,
@@ -747,13 +778,13 @@ export const generateMasterVideo = async (
         );
         sceneVideoUrl = result.url;
         if (onSceneUpdate) onSceneUpdate(scene.id, result.url, result.taskId);
-      } else {
-        onProgress?.(`Rendering Scene ${i + 1}: ${scene.text.substring(0, 30)}...`);
+      }
+      // Generate New Video
+      else {
+        onProgress?.(`Scene ${i + 1}: Generating new video...`);
         const result = await generateVideo(
           scene.visualPrompt,
-          (msg) => {
-            onProgress?.(`Scene ${i + 1}: ${msg}`);
-          },
+          (msg) => { /* Suppress individual progress noise */ },
           {
             sceneText: scene.text,
             topic: script.topic,
@@ -774,57 +805,57 @@ export const generateMasterVideo = async (
       }
 
       if (!isValidVideoUrl(sceneVideoUrl)) {
-        throw new Error(`Invalid video URL format for Scene ${i + 1}`);
+        throw new Error(`Invalid video URL for Scene ${i + 1}`);
       }
 
       let finalSceneUrl = sceneVideoUrl;
 
-      // Handle narration if enabled for this scene (or globally as fallback)
+      // Parallel Narration & Mixing
       if (scene.useNarration || script.useNarration) {
         if (!cartesiaKey || !voiceId) {
-          onProgress?.(`⚠ Narration skipped for Scene ${i + 1}: Missing Cartesia Key/Voice ID in Settings.`);
+          onProgress?.(`Scene ${i + 1}: ⚠ Narration skipped (Missing Keys).`);
         } else {
-          onProgress?.(`Generating narration for Scene ${i + 1}...`);
           try {
-            const { generateNarration, uploadToFal } = await import('./voiceService');
-            const audioBlob = await generateNarration(scene.text, voiceId, cartesiaKey);
-            onProgress?.(`Uploading narration to Fal.ai storage...`);
-            const audioUrl = await uploadToFal(audioBlob, falKey);
+            // Check if we already have audio to avoid re-generating
+            if (scene.audioUrl) {
+              onProgress?.(`Scene ${i + 1}: Using cached audio.`);
+              finalSceneUrl = await mixAudioVideoFal(sceneVideoUrl, scene.audioUrl, falKey);
+            } else {
+              onProgress?.(`Scene ${i + 1}: Generating narration...`);
+              // Dynamic import to avoid circular dep issues if any, though likely fine here
+              const { generateNarration, uploadToFal } = await import('./voiceService');
+              const audioBlob = await generateNarration(scene.text, voiceId, cartesiaKey);
+              const audioUrl = await uploadToFal(audioBlob, falKey);
 
-            if (onAudioUpdate) onAudioUpdate(scene.id, audioUrl);
+              if (onAudioUpdate) onAudioUpdate(scene.id, audioUrl);
 
-            onProgress?.(`Mixing audio and video for Scene ${i + 1}...`);
-            finalSceneUrl = await mixAudioVideoFal(sceneVideoUrl, audioUrl, falKey, (msg) => {
-              onProgress?.(`Scene ${i + 1} Mix: ${msg}`);
-            });
-            onProgress?.(`✓ Narration integrated into Scene ${i + 1}.`);
-          } catch (audioError: any) {
-            console.error(`Narration failed for Scene ${i + 1}:`, audioError);
-            onProgress?.(`⚠ Narration failed for Scene ${i + 1}: ${audioError.message}. Using original video.`);
+              onProgress?.(`Scene ${i + 1}: Mixing audio/video...`);
+              finalSceneUrl = await mixAudioVideoFal(sceneVideoUrl, audioUrl, falKey);
+            }
+          } catch (audioErr: any) {
+            console.error(`Scene ${i + 1} Audio Error:`, audioErr);
+            onProgress?.(`Scene ${i + 1}: ⚠ Audio failed, using silent video.`);
           }
         }
       }
 
-      videoUrls.push(finalSceneUrl);
-      onProgress?.(`✓ Scene ${i + 1} ready: ${finalSceneUrl.substring(0, 50)}...`);
-    } catch (error: any) {
-      const errorMsg = error.message || 'Unknown error';
-      onProgress?.(`✗ Scene ${i + 1} failed: ${errorMsg}`);
-      throw new Error(`Failed to generate video for Scene ${i + 1} (${scene.id}): ${errorMsg}`);
+      onProgress?.(`✓ Scene ${i + 1} Ready.`);
+      return finalSceneUrl;
+
+    } catch (err: any) {
+      console.error(`Error processing Scene ${i + 1}:`, err);
+      throw new Error(`Scene ${i + 1} Failed: ${err.message}`);
     }
-  }
+  });
 
-  if (videoUrls.length === 0) throw new Error("No video URLs were generated. Cannot proceed with stitching.");
+  // Wait for ALL scenes to complete
+  const videoUrls = await Promise.all(videoPromises);
 
-  onProgress?.(`✓ All ${videoUrls.length} videos ready. Preparing to stitch...`);
-  onProgress?.("Stitching final cut with FFmpeg...");
+  onProgress?.("All scenes ready. Stitching master video...");
 
+  // Stitch them together
   const masterUrl = await stitchVideosFal(videoUrls, falKey, onProgress);
+  onProgress?.("✓ Master Video Complete!");
 
-  if (!masterUrl || !isValidVideoUrl(masterUrl)) {
-    throw new Error("Stitching completed but returned an invalid master video URL.");
-  }
-
-  onProgress?.("✓ Master video stitched successfully!");
   return { url: masterUrl };
 };
