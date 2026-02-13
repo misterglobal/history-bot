@@ -29,6 +29,13 @@ export interface MasterVideoResponse {
   url: string;
 }
 
+export interface AssetVersion {
+  url: string;
+  taskId?: string;
+  type: 'image' | 'video';
+  createdAt: string;
+}
+
 export interface Scene {
   id: string;
   timestamp: string;
@@ -42,6 +49,8 @@ export interface Scene {
   isGeneratingAudio?: boolean;
   useNarration?: boolean;
   engine?: VideoEngine;
+  assetVersions?: AssetVersion[];
+  activeVersionIndex?: number;
 }
 
 // ... existing types

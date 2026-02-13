@@ -1,13 +1,23 @@
 import React, { useState, useEffect } from 'react';
-import { RefreshCcw, Video, Mic, Edit2, Play, Volume2, Upload, X } from 'lucide-react';
+import { RefreshCcw, Video, Mic, Edit2, Play, Volume2, Upload, X, ChevronLeft, ChevronRight } from 'lucide-react';
 import Header from './components/Header';
 import Archives from './components/Archives';
 import TrailerInput from './components/TrailerInput';
-import { AppState, VideoScript, Fact, Scene, ArchiveItem, VideoStyle, VideoEngine, SocialMetadata, Persona, AppMode, CastMember, TrailerScript, AspectRatio, CharacterRef } from './types';
+import { AppState, VideoScript, Fact, Scene, ArchiveItem, VideoStyle, VideoEngine, SocialMetadata, Persona, AppMode, CastMember, TrailerScript, AspectRatio, CharacterRef, AssetVersion } from './types';
 import * as gemini from './services/geminiService';
 import * as archiveService from './services/archiveService';
 import * as socialService from './services/socialService';
 import { PERSONAS } from './constants';
+
+// Helper: get the active asset URL and type from a scene's version history
+const getActiveAsset = (scene: Scene): { url?: string; type: 'image' | 'video'; taskId?: string } => {
+  if (scene.assetVersions && scene.assetVersions.length > 0) {
+    const idx = scene.activeVersionIndex ?? scene.assetVersions.length - 1;
+    const v = scene.assetVersions[idx];
+    return { url: v.url, type: v.type, taskId: v.taskId };
+  }
+  return { url: scene.assetUrl, type: scene.assetType, taskId: scene.kieTaskId };
+};
 
 const App: React.FC = () => {
   // ... (previous state declarations - lines 11-54 remain same, but I can't skip lines easily with replace_file_content unless I match context properly. I will try to match the top block first to update imports)
@@ -368,7 +378,7 @@ const App: React.FC = () => {
         await checkApiKey();
       }
 
-      // Prepare fresh scene state (clear old URLs/IDs)
+      // Mark scene as generating (don't clear old asset — it stays visible)
       setScript(prev => {
         if (!prev) return null;
         const scenes = [...prev.scenes];
@@ -377,24 +387,38 @@ const App: React.FC = () => {
           scenes[idx] = {
             ...scenes[idx],
             isGenerating: true,
-            assetType: type,
-            assetUrl: undefined, // Clear stale URL
-            kieTaskId: undefined // Clear stale Task ID
+            assetType: type
           };
         }
         return { ...prev, scenes };
       });
-      if (type === 'image') {
-        const url = await gemini.generateImage(script.scenes[sceneIndex].visualPrompt, geminiKey, script.characters);
+
+      // Helper to push a new version onto the scene
+      const pushVersion = (sceneId: string, url: string, assetType: 'image' | 'video', taskId?: string) => {
         setScript(prev => {
           if (!prev) return null;
           const scenes = [...prev.scenes];
           const idx = scenes.findIndex(s => s.id === sceneId);
           if (idx !== -1) {
-            scenes[idx] = { ...scenes[idx], assetUrl: url, isGenerating: false };
+            const newVersion: AssetVersion = { url, type: assetType, taskId, createdAt: new Date().toISOString() };
+            const versions = [...(scenes[idx].assetVersions || []), newVersion];
+            scenes[idx] = {
+              ...scenes[idx],
+              assetUrl: url,
+              kieTaskId: taskId,
+              assetType,
+              assetVersions: versions,
+              activeVersionIndex: versions.length - 1,
+              isGenerating: false
+            };
           }
           return { ...prev, scenes };
         });
+      };
+
+      if (type === 'image') {
+        const url = await gemini.generateImage(script.scenes[sceneIndex].visualPrompt, geminiKey, script.characters);
+        pushVersion(sceneId, url, 'image');
       } else {
         const currentScene = script.scenes[sceneIndex];
         const result = await gemini.generateVideo(
@@ -408,12 +432,11 @@ const App: React.FC = () => {
             timestamp: currentScene.timestamp,
             style: selectedStyle,
             engine: currentScene.engine || script.engine || 'veo',
-            aspectRatio: script.aspectRatio, // Pass aspect ratio
+            aspectRatio: script.aspectRatio,
             characters: script.characters
           },
           kieKey,
           (taskId) => {
-            // Save taskId immediately upon generation
             setScript(prev => {
               if (!prev) return null;
               const scenes = [...prev.scenes];
@@ -434,21 +457,7 @@ const App: React.FC = () => {
             publicUrl: r2PublicUrl
           }
         );
-
-        setScript(prev => {
-          if (!prev) return null;
-          const scenes = [...prev.scenes];
-          const idx = scenes.findIndex(s => s.id === sceneId);
-          if (idx !== -1) {
-            scenes[idx] = {
-              ...scenes[idx],
-              assetUrl: result.url,
-              kieTaskId: result.taskId,
-              isGenerating: false
-            };
-          }
-          return { ...prev, scenes };
-        });
+        pushVersion(sceneId, result.url, 'video', result.taskId);
       }
     } catch (err: any) {
       if (err.message === "API_KEY_EXPIRED") {
@@ -594,7 +603,22 @@ const App: React.FC = () => {
             const sceneIndex = prev.scenes.findIndex(s => s.id === sceneId);
             if (sceneIndex === -1) return prev;
             const updatedScenes = [...prev.scenes];
-            updatedScenes[sceneIndex] = { ...updatedScenes[sceneIndex], assetUrl, kieTaskId: taskId, isGenerating: false };
+            const scene = updatedScenes[sceneIndex];
+
+            // Push to versions if not already present
+            const versions = [...(scene.assetVersions || [])];
+            if (!versions.some(v => v.url === assetUrl)) {
+              versions.push({ url: assetUrl, taskId, type: 'video', createdAt: new Date().toISOString() });
+            }
+
+            updatedScenes[sceneIndex] = {
+              ...scene,
+              assetUrl,
+              kieTaskId: taskId,
+              assetVersions: versions,
+              activeVersionIndex: versions.length - 1,
+              isGenerating: false
+            };
             return { ...prev, scenes: updatedScenes };
           });
         },
@@ -1135,28 +1159,84 @@ const App: React.FC = () => {
                       </div>
                     </div>
 
-                    <div className="w-44 aspect-[9/16] bg-black rounded-2xl overflow-hidden border border-white/10 flex items-center justify-center relative shadow-inner">
-                      {scene.assetUrl ? (
-                        scene.assetType === 'image' ? (
-                          <img src={scene.assetUrl} alt="Scene" className="w-full h-full object-cover" />
-                        ) : (
-                          <video
-                            src={scene.assetUrl}
-                            controls
-                            className="w-full h-full object-cover"
-                            onError={(e) => {
-                              const target = e.target as HTMLVideoElement;
-                              if (target.src && !target.src.includes('blob:')) {
-                                console.warn("Asset link possibly expired:", scene.id);
-                              }
+                    <div className="w-44 flex flex-col gap-2">
+                      <div className="w-full aspect-[9/16] bg-black rounded-2xl overflow-hidden border border-white/10 flex items-center justify-center relative shadow-inner group/preview">
+                        {(() => {
+                          const active = getActiveAsset(scene);
+                          if (active.url) {
+                            return active.type === 'image' ? (
+                              <img src={active.url} alt="Scene" className="w-full h-full object-cover" />
+                            ) : (
+                              <video
+                                key={active.url}
+                                src={active.url}
+                                controls
+                                className="w-full h-full object-cover"
+                                onError={(e) => {
+                                  const target = e.target as HTMLVideoElement;
+                                  if (target.src && !target.src.includes('blob:')) {
+                                    console.warn("Asset link possibly expired:", scene.id);
+                                  }
+                                }}
+                              />
+                            );
+                          }
+                          if (scene.isGenerating) {
+                            return <div className="w-8 h-8 border-3 border-yellow-500 border-t-transparent rounded-full animate-spin"></div>;
+                          }
+                          return (
+                            <div className="text-center p-4">
+                              <p className="text-[10px] text-zinc-600 font-bold uppercase tracking-widest">Awaiting Render</p>
+                            </div>
+                          );
+                        })()}
+                      </div>
+
+                      {(scene.assetVersions?.length || 0) > 1 && (
+                        <div className="flex items-center justify-between px-1 bg-black/40 rounded-lg border border-white/5 py-1">
+                          <button
+                            onClick={() => {
+                              setScript(prev => {
+                                if (!prev) return null;
+                                const scenes = [...prev.scenes];
+                                const idx = scenes.findIndex(s => s.id === scene.id);
+                                if (idx !== -1) {
+                                  const currentIdx = scenes[idx].activeVersionIndex ?? (scenes[idx].assetVersions!.length - 1);
+                                  scenes[idx] = {
+                                    ...scenes[idx],
+                                    activeVersionIndex: (currentIdx - 1 + scenes[idx].assetVersions!.length) % scenes[idx].assetVersions!.length
+                                  };
+                                }
+                                return { ...prev, scenes };
+                              });
                             }}
-                          />
-                        )
-                      ) : scene.isGenerating ? (
-                        <div className="w-8 h-8 border-3 border-yellow-500 border-t-transparent rounded-full animate-spin"></div>
-                      ) : (
-                        <div className="text-center p-4">
-                          <p className="text-[10px] text-zinc-600 font-bold uppercase tracking-widest">Awaiting Render</p>
+                            className="p-1 hover:text-yellow-500 transition-colors"
+                          >
+                            <ChevronLeft size={14} />
+                          </button>
+                          <span className="text-[9px] font-bold text-zinc-500 uppercase tracking-tighter">
+                            Take {(scene.activeVersionIndex ?? (scene.assetVersions!.length - 1)) + 1} / {scene.assetVersions!.length}
+                          </span>
+                          <button
+                            onClick={() => {
+                              setScript(prev => {
+                                if (!prev) return null;
+                                const scenes = [...prev.scenes];
+                                const idx = scenes.findIndex(s => s.id === scene.id);
+                                if (idx !== -1) {
+                                  const currentIdx = scenes[idx].activeVersionIndex ?? (scenes[idx].assetVersions!.length - 1);
+                                  scenes[idx] = {
+                                    ...scenes[idx],
+                                    activeVersionIndex: (currentIdx + 1) % scenes[idx].assetVersions!.length
+                                  };
+                                }
+                                return { ...prev, scenes };
+                              });
+                            }}
+                            className="p-1 hover:text-yellow-500 transition-colors"
+                          >
+                            <ChevronRight size={14} />
+                          </button>
                         </div>
                       )}
                     </div>

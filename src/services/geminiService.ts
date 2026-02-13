@@ -1062,13 +1062,28 @@ export const generateMasterVideo = async (
       let sceneVideoUrl = "";
       let generatedTaskId = scene.kieTaskId || '';
 
+      // Determine the active asset for this scene
+      let activeUrl = scene.assetUrl;
+      let activeType = scene.assetType;
+      let activeTaskId = scene.kieTaskId;
+
+      if (scene.assetVersions && scene.assetVersions.length > 0) {
+        const vIdx = scene.activeVersionIndex ?? (scene.assetVersions.length - 1);
+        const v = scene.assetVersions[vIdx];
+        activeUrl = v.url;
+        activeType = v.type;
+        activeTaskId = v.taskId;
+      }
+
       // Check for existing valid video URL (Cache Hit)
-      if (scene.assetUrl && scene.assetType === 'video' && isValidVideoUrl(scene.assetUrl)) {
+      if (activeUrl && activeType === 'video' && isValidVideoUrl(activeUrl)) {
         onProgress?.(`Scene ${i + 1}: Using cached video.`);
-        sceneVideoUrl = scene.assetUrl;
+        sceneVideoUrl = activeUrl;
+        generatedTaskId = activeTaskId || '';
       }
       // Check for existing Task ID (Resume/Poll)
-      else if (scene.kieTaskId) {
+      else if (activeTaskId || scene.kieTaskId) {
+        const taskIdToResume = activeTaskId || scene.kieTaskId || '';
         onProgress?.(`Scene ${i + 1}: Resuming/Polling...`);
         const result = await generateVideo(
           scene.visualPrompt,
