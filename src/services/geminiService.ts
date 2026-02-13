@@ -1,6 +1,6 @@
 import { GoogleGenAI } from "@google/genai";
 import { MODEL_TEXT, MODEL_IMAGE, getSystemPrompt, MODEL_VIDEO } from "../constants";
-import { VideoScript, Fact, VideoStyle, VideoEngine, MasterVideoResponse, R2Config, Persona } from "../types";
+import { VideoScript, Fact, VideoStyle, VideoEngine, MasterVideoResponse, R2Config, Persona, TrailerScript, AspectRatio, CharacterRef } from "../types";
 
 // Helper to strip data prefix from base64 strings
 const stripBase64 = (base64: string) => {
@@ -56,18 +56,162 @@ export const generateScript = async (topic: string, facts: string, apiKey?: stri
   }
 };
 
-export const generateImage = async (prompt: string, apiKey?: string): Promise<string> => {
+export const generateTrailerScript = async (
+  title: string,
+  genre: string,
+  cast: { role: string; name: string }[],
+  plot: string,
+  apiKey?: string
+): Promise<TrailerScript> => {
+  const key = getGeminiKey(apiKey);
+  if (!key) throw new Error("Gemini API Key is missing.");
+
+  const casting = cast.map(c => `${c.role}: ${c.name}`).join('\n');
+
+  const ai = new GoogleGenAI({ apiKey: key });
+  const response = await ai.models.generateContent({
+    model: MODEL_TEXT,
+    contents: `
+        Create a movie trailer script for:
+        Title: ${title}
+        Genre: ${genre}
+        Plot: ${plot}
+        Cast:
+        ${casting}
+  
+        Structure:
+        1. Hook (0-5s): Intense visual, establishing shot.
+        2. Rising Action (5-20s): Plot setup, conflict introduction.
+        3. Climax (20-30s): Quick cuts, action, key lines.
+        4. Title Card (30s+): Final impact.
+  
+        IMPORTANT:
+        - Visual Prompts MUST explicitly name the cast members (e.g. "Close up of [Actor Name]").
+        - Keep it punchy and viral.
+        - Return strictly JSON.
+
+        JSON Schema:
+        {
+          "scenes": [
+            {
+              "id": "1",
+              "timestamp": "0s",
+              "text": "Narration text...",
+              "visualPrompt": "Detailed visual description including camera angle and lighting..."
+            }
+          ],
+          "hook": "Opening line",
+          "body": "Main content",
+          "outro": "Ending"
+        }
+      `,
+    config: {
+      responseMimeType: "application/json",
+      systemInstruction: "You are a Hollywood Trailer Editor. Create high-intensity scripts with visual prompts that star specific actors.",
+    },
+  });
+
+  try {
+    const data = JSON.parse(response.text || '{}');
+    // Enforce trailer metadata
+    return {
+      ...data,
+      title,
+      genre,
+      cast,
+      plot,
+      // Ensure structure matches VideoScript for compatibility
+      topic: title,
+      intro: data.intro || data.hook || '',
+      scenes: data.scenes || [],
+      hook: data.hook || '',
+      body: data.body || '',
+      outro: data.outro || ''
+    } as TrailerScript;
+  } catch (e) {
+    console.error("Failed to parse trailer JSON", e);
+    throw new Error("Invalid trailer format received.");
+  }
+};
+
+export const getCharacterDescriptions = async (prompt: string, characters: CharacterRef[], apiKey?: string): Promise<string> => {
+  if (!characters || characters.length === 0) return '';
+
+  // Find which characters are mentioned in the prompt
+  const mentionedCharacters = characters.filter(char =>
+    prompt.toLowerCase().includes(char.name.toLowerCase())
+  );
+
+  if (mentionedCharacters.length === 0) return '';
+
+  const key = getGeminiKey(apiKey);
+  if (!key) return '';
+
+  const ai = new GoogleGenAI({ apiKey: key });
+
+  let extraDescription = "\n\nCRITICAL CHARACTER REFERENCES (Must match these visual details exactly):";
+
+  for (const char of mentionedCharacters) {
+    if (!char.imageUrl) continue;
+
+    try {
+      // Use the project's existing pattern: ai.models.generateContent
+      // @ts-ignore
+      const result = await ai.models.generateContent({
+        model: MODEL_IMAGE,
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              { inlineData: { mimeType: 'image/png', data: stripBase64(char.imageUrl) } },
+              { text: `Describe this character's physical appearance (facial features, hair, age, build, typical attire) in 1-2 highly detailed sentences for use in a video generation prompt. Focus on unique identifying marks.` }
+            ]
+          }
+        ]
+      });
+
+      // @ts-ignore
+      const description = result.text || "";
+      extraDescription += `\n- ${char.name}: ${description}`;
+    } catch (err) {
+      console.warn(`Failed to describe character ${char.name}:`, err);
+    }
+  }
+
+  return extraDescription;
+};
+
+export const generateImage = async (prompt: string, apiKey?: string, characters?: CharacterRef[]): Promise<string> => {
   const key = getGeminiKey(apiKey);
   if (!key) throw new Error("Gemini API Key is missing. Please add it in Settings.");
 
   const ai = new GoogleGenAI({ apiKey: key });
+
+  // Find mentioned characters for multimodal input
+  const mentionedCharacters = (characters || []).filter(char =>
+    char.imageUrl && prompt.toLowerCase().includes(char.name.toLowerCase())
+  );
+
+  const parts: any[] = [{ text: `${prompt}. Style: Cinematic, hyper-realistic, dynamic lighting, historical accuracy but stylized for TikTok.` }];
+
+  // Add images to multimodal prompt if characters are mentioned
+  for (const char of mentionedCharacters) {
+    parts.unshift({
+      inlineData: {
+        mimeType: 'image/png',
+        data: stripBase64(char.imageUrl)
+      }
+    });
+    parts.unshift({ text: `Reference image for ${char.name}:` });
+  }
+
+  // @ts-ignore
   const response = await ai.models.generateContent({
     model: MODEL_IMAGE,
-    contents: {
-      parts: [{ text: `${prompt}. Style: Cinematic, hyper-realistic, dynamic lighting, historical accuracy but stylized for TikTok.` }],
-    },
+    contents: [{ role: 'user', parts }],
   });
 
+  // @ts-ignore
   for (const part of response.candidates?.[0]?.content?.parts || []) {
     if (part.inlineData) {
       return `data:image/png;base64,${part.inlineData.data}`;
@@ -131,7 +275,7 @@ export const getVideoFromTaskId = async (taskId: string, onProgress?: (msg: stri
 export const generateVideo = async (
   prompt: string,
   onProgress?: (msg: string) => void,
-  context?: { sceneText?: string; topic?: string; timestamp?: string; style?: VideoStyle; engine?: VideoEngine },
+  context?: { sceneText?: string; topic?: string; timestamp?: string; style?: VideoStyle; engine?: VideoEngine; aspectRatio?: AspectRatio; characters?: CharacterRef[] },
   apiKey?: string,
   onTaskId?: (taskId: string) => void,
   openAIKey?: string,
@@ -163,7 +307,7 @@ const sanitizePromptForSafety = (prompt: string): string => {
 export const generateVideoVeo = async (
   prompt: string,
   onProgress?: (msg: string) => void,
-  context?: { sceneText?: string; topic?: string; timestamp?: string; style?: VideoStyle },
+  context?: { sceneText?: string; topic?: string; timestamp?: string; style?: VideoStyle; aspectRatio?: AspectRatio; characters?: CharacterRef[] },
   apiKey?: string,
   onTaskId?: (taskId: string) => void,
   retryCount = 0
@@ -197,6 +341,13 @@ export const generateVideoVeo = async (
     enhancedPrompt += ` Historical topic: ${context.topic}.`;
   }
 
+  // Add character-specific visual grounding if reference images exist
+  if (context?.characters) {
+    onProgress?.("Extracting character visual traits from reference images...");
+    const charTrais = await getCharacterDescriptions(prompt, context.characters, apiKey);
+    enhancedPrompt += charTrais;
+  }
+
   // Add video-specific enhancements
   enhancedPrompt += ` ${cinematicEnhancement} Period-accurate details, dynamic camera movement, high motion, educational and informative visual storytelling. Characters and actions must clearly convey the historical narrative. Maintain consistent character appearance and environment across scenes.`;
 
@@ -211,7 +362,7 @@ export const generateVideoVeo = async (
       body: JSON.stringify({
         prompt: enhancedPrompt,
         model: "veo3_fast",
-        aspectRatio: "9:16",
+        aspectRatio: context?.aspectRatio || "9:16",
         enableFallback: false,
         enableTranslation: true,
         generationType: "TEXT_2_VIDEO"
@@ -390,6 +541,115 @@ export const generateVideoVeo = async (
     }
     throw err;
   }
+};
+
+/**
+ * Extend a previously generated Veo video using KIE AI's extend API.
+ * Takes the original taskId and continues the scene with the same or updated prompt.
+ */
+export const extendVideoVeo = async (
+  taskId: string,
+  prompt: string,
+  onProgress?: (msg: string) => void,
+  apiKey?: string
+): Promise<{ url: string; taskId: string }> => {
+  const key = getKieKey(apiKey);
+  if (!key) throw new Error("KIE AI API Key is missing. Please add it in Settings.");
+
+  onProgress?.("Extending scene with Veo...");
+
+  // Step 1: Submit extend request
+  const extendResponse = await fetch("https://api.kie.ai/api/v1/veo/extend", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${key}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      taskId,
+      prompt,
+      model: "fast"
+    })
+  });
+
+  if (!extendResponse.ok) {
+    let errorData: any = {};
+    try {
+      errorData = JSON.parse(await extendResponse.text());
+    } catch { /* ignore */ }
+
+    if (extendResponse.status === 401) throw new Error("API_KEY_EXPIRED");
+    throw new Error(`Veo Extend API error (${extendResponse.status}): ${errorData.message || errorData.error || extendResponse.statusText}`);
+  }
+
+  const extendData = await extendResponse.json();
+  const extendTaskId = extendData.taskId || extendData.task_id || extendData.id ||
+    extendData.data?.taskId || extendData.data?.id;
+
+  if (!extendTaskId) {
+    throw new Error(`No task ID returned from Veo Extend API. Response: ${JSON.stringify(extendData).substring(0, 200)}`);
+  }
+
+  onProgress?.("Extend in progress...");
+
+  // Step 2: Poll for completion (same pattern as generateVideoVeo)
+  let status = "PENDING";
+  let videoUrl = "";
+  const maxAttempts = 120;
+  let attempts = 0;
+
+  while (status !== "COMPLETED" && status !== "SUCCESS" && attempts < maxAttempts) {
+    await new Promise(resolve => setTimeout(resolve, 5000));
+    attempts++;
+
+    try {
+      const statusResponse = await fetch(`https://api.kie.ai/api/v1/veo/record-info?taskId=${extendTaskId}`, {
+        headers: { "Authorization": `Bearer ${key}` }
+      });
+
+      if (!statusResponse.ok) {
+        onProgress?.(`Extending scene... (${attempts * 5}s)`);
+        continue;
+      }
+
+      const statusData = await statusResponse.json();
+
+      if (statusData.code !== 200) {
+        if (statusData.data?.errorCode && statusData.data?.errorCode !== 0) {
+          throw new Error(`Extend failed: ${statusData.data?.errorMessage || "Unknown error"}`);
+        }
+        onProgress?.(`Extending scene... (${attempts * 5}s)`);
+        continue;
+      }
+
+      if (statusData.data?.successFlag === 1) {
+        const resultUrls = statusData.data?.response?.resultUrls;
+        if (resultUrls?.length > 0) {
+          videoUrl = resultUrls[0];
+          status = "COMPLETED";
+          break;
+        }
+        const originUrls = statusData.data?.response?.originUrls;
+        if (originUrls?.length > 0) {
+          videoUrl = originUrls[0];
+          status = "COMPLETED";
+          break;
+        }
+        onProgress?.(`Extended video ready but URL not found... (${attempts * 5}s)`);
+      } else {
+        onProgress?.(`Extending scene... (${attempts * 5}s)`);
+      }
+    } catch (pollError: any) {
+      throw pollError;
+    }
+  }
+
+  if (status !== "COMPLETED") {
+    throw new Error("Veo extend timed out. Please try again.");
+  }
+
+  onProgress?.("✓ Scene extended successfully!");
+  return { url: videoUrl, taskId: extendTaskId };
 };
 
 /**
@@ -749,6 +1009,7 @@ export const generateMasterVideo = async (
   const videoPromises = script.scenes.map(async (scene, i) => {
     try {
       let sceneVideoUrl = "";
+      let generatedTaskId = scene.kieTaskId || '';
 
       // Check for existing valid video URL (Cache Hit)
       if (scene.assetUrl && scene.assetType === 'video' && isValidVideoUrl(scene.assetUrl)) {
@@ -770,6 +1031,7 @@ export const generateMasterVideo = async (
           },
           kieKey,
           (taskId) => {
+            generatedTaskId = taskId;
             if (onSceneTaskId) onSceneTaskId(scene.id, taskId);
           },
           openAIKey,
@@ -777,6 +1039,7 @@ export const generateMasterVideo = async (
           r2Config
         );
         sceneVideoUrl = result.url;
+        generatedTaskId = result.taskId || generatedTaskId;
         if (onSceneUpdate) onSceneUpdate(scene.id, result.url, result.taskId);
       }
       // Generate New Video
@@ -784,28 +1047,51 @@ export const generateMasterVideo = async (
         onProgress?.(`Scene ${i + 1}: Generating new video...`);
         const result = await generateVideo(
           scene.visualPrompt,
-          (msg) => { /* Suppress individual progress noise */ },
+          (msg) => onProgress?.(`[Scene ${scene.id}] ${msg}`),
           {
             sceneText: scene.text,
             topic: script.topic,
             timestamp: scene.timestamp,
-            style: style,
-            engine: scene.engine || script.engine || 'veo'
+            style: style || 'cinematic',
+            engine: scene.engine || script.engine || 'veo',
+            aspectRatio: script.aspectRatio,
+            characters: script.characters
           },
           kieKey,
           (taskId) => {
-            if (onSceneTaskId) onSceneTaskId(scene.id, taskId);
+            generatedTaskId = taskId;
+            onSceneTaskId?.(scene.id, taskId);
           },
           openAIKey,
           falKey,
           r2Config
         );
         sceneVideoUrl = result.url;
+        generatedTaskId = result.taskId || generatedTaskId;
         if (onSceneUpdate) onSceneUpdate(scene.id, result.url, result.taskId);
       }
 
       if (!isValidVideoUrl(sceneVideoUrl)) {
         throw new Error(`Invalid video URL for Scene ${i + 1}`);
+      }
+
+      // Extend scene if toggle is enabled (Veo only)
+      if (script.useExtendedScenes && generatedTaskId && (scene.engine || script.engine || 'veo') === 'veo') {
+        try {
+          onProgress?.(`Scene ${i + 1}: Extending scene for longer duration...`);
+          const extResult = await extendVideoVeo(
+            generatedTaskId,
+            scene.visualPrompt,
+            (msg) => onProgress?.(`[Scene ${scene.id}] ${msg}`),
+            kieKey
+          );
+          sceneVideoUrl = extResult.url;
+          generatedTaskId = extResult.taskId;
+          if (onSceneUpdate) onSceneUpdate(scene.id, extResult.url, extResult.taskId);
+        } catch (extErr: any) {
+          console.warn(`Scene ${i + 1} extend failed, using original:`, extErr.message);
+          onProgress?.(`Scene ${i + 1}: ⚠ Extend failed, using original clip.`);
+        }
       }
 
       let finalSceneUrl = sceneVideoUrl;

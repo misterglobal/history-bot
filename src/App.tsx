@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { RefreshCcw, Video, Mic, Edit2, Play, Volume2, Upload } from 'lucide-react';
+import { RefreshCcw, Video, Mic, Edit2, Play, Volume2, Upload, X } from 'lucide-react';
 import Header from './components/Header';
 import Archives from './components/Archives';
-import { AppState, VideoScript, Fact, Scene, ArchiveItem, VideoStyle, VideoEngine, SocialMetadata, Persona } from './types';
+import TrailerInput from './components/TrailerInput';
+import { AppState, VideoScript, Fact, Scene, ArchiveItem, VideoStyle, VideoEngine, SocialMetadata, Persona, AppMode, CastMember, TrailerScript, AspectRatio, CharacterRef } from './types';
 import * as gemini from './services/geminiService';
 import * as archiveService from './services/archiveService';
 import * as socialService from './services/socialService';
@@ -10,7 +11,10 @@ import { PERSONAS } from './constants';
 
 const App: React.FC = () => {
   // ... (previous state declarations - lines 11-54 remain same, but I can't skip lines easily with replace_file_content unless I match context properly. I will try to match the top block first to update imports)
+  // ... (previous state declarations)
   const [currentStep, setCurrentStep] = useState<AppState>(AppState.IDLE);
+  const [appMode, setAppMode] = useState<AppMode>(AppMode.HISTORY);
+
   // ...
   // I will target the imports specifically first.
 
@@ -318,7 +322,42 @@ const App: React.FC = () => {
     }
   };
 
-  const handleGenerateAsset = async (sceneId: string, type: 'image' | 'video') => {
+  const handleGenerateTrailer = async (title: string, genre: string, cast: CastMember[], plot: string, aspectRatio: AspectRatio) => {
+    setLoading(true);
+    setError(null);
+    setStatusMessage('Writing Blockbuster Script...');
+
+    try {
+      const generatedScript: TrailerScript = await gemini.generateTrailerScript(
+        title,
+        genre,
+        cast,
+        plot,
+        geminiKey
+      );
+
+      setScript({
+        ...generatedScript,
+        aspectRatio,
+        characters: cast.filter(c => c.imageUrl).map(c => ({
+          id: Math.random().toString(36).substr(2, 9),
+          name: c.name,
+          imageUrl: c.imageUrl!
+        }))
+      });
+      setTopic(title);
+      setCurrentStep(AppState.SCRIPTING);
+
+    } catch (error: any) {
+      console.error('Error generating trailer:', error);
+      setError(`Trailer Gen Failed: ${error.message}`);
+      setLoading(false);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleGenerateAsset = async (sceneId: string, type: 'image' | 'video' = 'image') => {
     if (!script) return;
 
     const sceneIndex = script.scenes.findIndex(s => s.id === sceneId);
@@ -346,7 +385,7 @@ const App: React.FC = () => {
         return { ...prev, scenes };
       });
       if (type === 'image') {
-        const url = await gemini.generateImage(script.scenes[sceneIndex].visualPrompt, geminiKey);
+        const url = await gemini.generateImage(script.scenes[sceneIndex].visualPrompt, geminiKey, script.characters);
         setScript(prev => {
           if (!prev) return null;
           const scenes = [...prev.scenes];
@@ -368,7 +407,9 @@ const App: React.FC = () => {
             topic: script.topic,
             timestamp: currentScene.timestamp,
             style: selectedStyle,
-            engine: currentScene.engine || script.engine || 'veo'
+            engine: currentScene.engine || script.engine || 'veo',
+            aspectRatio: script.aspectRatio, // Pass aspect ratio
+            characters: script.characters
           },
           kieKey,
           (taskId) => {
@@ -718,6 +759,8 @@ const App: React.FC = () => {
       <Header
         onOpenSettings={() => setShowSettings(true)}
         onOpenArchives={handleOpenArchives}
+        currentMode={appMode}
+        onModeChange={setAppMode}
       />
 
       <main className="max-w-7xl mx-auto px-6 py-8">
@@ -740,81 +783,91 @@ const App: React.FC = () => {
         )}
 
         {currentStep === AppState.IDLE && (
-          <div className="flex flex-col items-center justify-center py-20 animate-in fade-in zoom-in-95 duration-700">
-            <h2 className="text-5xl md:text-7xl font-impact tracking-wider mb-6 text-center max-w-3xl uppercase">
-              Make History <span className="text-yellow-500 underline decoration-zinc-800">Go Viral</span>
-            </h2>
-            <p className="text-zinc-400 text-lg mb-10 text-center max-w-xl">
-              Coherent scene-by-scene generation. Powered by <b>Veo 3.1</b> and <b>FFmpeg</b> for seamless historical storytelling.
-            </p>
-
-            <div className="flex gap-4 mb-4">
-              {(['veo', 'sora2'] as VideoEngine[]).map((engine) => (
-                <button
-                  key={engine}
-                  onClick={() => {
-                    setSelectedEngine(engine);
-                    localStorage.setItem('SELECTED_ENGINE', engine);
-                  }}
-                  className={`px-6 py-2 rounded-xl text-sm font-bold uppercase tracking-widest transition-all ${selectedEngine === engine
-                    ? 'bg-white text-zinc-950 shadow-xl scale-105'
-                    : 'bg-zinc-900/50 text-zinc-500 hover:text-white border border-white/5'
-                    }`}
-                >
-                  {engine === 'veo' ? 'Veo 3.1' : 'Sora 2'}
-                </button>
-              ))}
-            </div>
-
-            <div className="flex gap-4 mb-4">
-              {PERSONAS.map((persona) => (
-                <button
-                  key={persona.id}
-                  onClick={() => setSelectedPersona(persona.id)}
-                  className={`px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-widest transition-all ${selectedPersona === persona.id
-                    ? 'bg-blue-600 text-white shadow-xl scale-105'
-                    : 'bg-zinc-900/50 text-zinc-500 hover:text-white border border-white/5'
-                    }`}
-                  title={persona.description}
-                >
-                  {persona.name}
-                </button>
-              ))}
-            </div>
-
-            <div className="flex flex-wrap justify-center gap-3 mb-10 max-w-2xl">
-              {(['cinematic', 'gritty', 'meme', 'watercolor', 'anime'] as VideoStyle[]).map((style) => (
-                <button
-                  key={style}
-                  onClick={() => setSelectedStyle(style)}
-                  className={`px-4 py-2 rounded-full text-xs font-bold uppercase tracking-widest transition-all ${selectedStyle === style
-                    ? 'bg-yellow-500 text-zinc-950 shadow-lg shadow-yellow-500/20 scale-105'
-                    : 'bg-zinc-900 text-zinc-500 hover:text-white border border-white/5'
-                    }`}
-                >
-                  {style}
-                </button>
-              ))}
-            </div>
-
-            <form onSubmit={handleResearch} className="w-full max-w-2xl relative group">
-              <input
-                type="text"
-                placeholder="Enter a historical topic (e.g. The Emu War)"
-                className="w-full bg-zinc-900 border-2 border-white/5 group-hover:border-yellow-500/50 focus:border-yellow-500 rounded-2xl py-5 px-6 outline-none transition-all text-xl shadow-2xl shadow-black"
-                value={topic}
-                onChange={(e) => setTopic(e.target.value)}
-                disabled={loading}
+          <>
+            {appMode === AppMode.TRAILER ? (
+              <TrailerInput
+                onGenerate={handleGenerateTrailer}
+                onCancel={() => setAppMode(AppMode.HISTORY)}
+                isGenerating={loading}
               />
-              <button
-                type="submit"
-                disabled={loading || !topic}
-                className="absolute right-3 top-3 bottom-3 px-8 bg-yellow-500 hover:bg-yellow-400 text-zinc-950 font-bold rounded-xl transition-all shadow-lg"
-              >
-                {loading ? "Drafting..." : "GO!"}
-              </button>
-            </form>
-          </div>
+            ) : (
+              <div className="flex flex-col items-center justify-center py-20 animate-in fade-in zoom-in-95 duration-700">
+                <h2 className="text-5xl md:text-7xl font-impact tracking-wider mb-6 text-center max-w-3xl uppercase">
+                  Make History <span className="text-yellow-500 underline decoration-zinc-800">Go Viral</span>
+                </h2>
+                <p className="text-zinc-400 text-lg mb-10 text-center max-w-xl">
+                  Coherent scene-by-scene generation. Powered by <b>Veo 3.1</b> and <b>FFmpeg</b> for seamless historical storytelling.
+                </p>
+
+                <div className="flex gap-4 mb-4">
+                  {(['veo', 'sora2'] as VideoEngine[]).map((engine) => (
+                    <button
+                      key={engine}
+                      onClick={() => {
+                        setSelectedEngine(engine);
+                        localStorage.setItem('SELECTED_ENGINE', engine);
+                      }}
+                      className={`px-6 py-2 rounded-xl text-sm font-bold uppercase tracking-widest transition-all ${selectedEngine === engine
+                        ? 'bg-white text-zinc-950 shadow-xl scale-105'
+                        : 'bg-zinc-900/50 text-zinc-500 hover:text-white border border-white/5'
+                        }`}
+                    >
+                      {engine === 'veo' ? 'Veo 3.1' : 'Sora 2'}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="flex gap-4 mb-4">
+                  {PERSONAS.map((persona) => (
+                    <button
+                      key={persona.id}
+                      onClick={() => setSelectedPersona(persona.id)}
+                      className={`px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-widest transition-all ${selectedPersona === persona.id
+                        ? 'bg-blue-600 text-white shadow-xl scale-105'
+                        : 'bg-zinc-900/50 text-zinc-500 hover:text-white border border-white/5'
+                        }`}
+                      title={persona.description}
+                    >
+                      {persona.name}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="flex flex-wrap justify-center gap-3 mb-10 max-w-2xl">
+                  {(['cinematic', 'gritty', 'meme', 'watercolor', 'anime'] as VideoStyle[]).map((style) => (
+                    <button
+                      key={style}
+                      onClick={() => setSelectedStyle(style)}
+                      className={`px-4 py-2 rounded-full text-xs font-bold uppercase tracking-widest transition-all ${selectedStyle === style
+                        ? 'bg-yellow-500 text-zinc-950 shadow-lg shadow-yellow-500/20 scale-105'
+                        : 'bg-zinc-900 text-zinc-500 hover:text-white border border-white/5'
+                        }`}
+                    >
+                      {style}
+                    </button>
+                  ))}
+                </div>
+
+                <form onSubmit={handleResearch} className="w-full max-w-2xl relative group">
+                  <input
+                    type="text"
+                    placeholder="Enter a historical topic (e.g. The Emu War)"
+                    className="w-full bg-zinc-900 border-2 border-white/5 group-hover:border-yellow-500/50 focus:border-yellow-500 rounded-2xl py-5 px-6 outline-none transition-all text-xl shadow-2xl shadow-black"
+                    value={topic}
+                    onChange={(e) => setTopic(e.target.value)}
+                    disabled={loading}
+                  />
+                  <button
+                    type="submit"
+                    disabled={loading || !topic}
+                    className="absolute right-3 top-3 bottom-3 px-8 bg-yellow-500 hover:bg-yellow-400 text-zinc-950 font-bold rounded-xl transition-all shadow-lg"
+                  >
+                    {loading ? "Drafting..." : "GO!"}
+                  </button>
+                </form>
+              </div>
+            )}
+          </>
         )}
 
         {currentStep !== AppState.IDLE && currentStep !== AppState.ARCHIVES && script && !masterVideoUrl && (
@@ -825,7 +878,7 @@ const App: React.FC = () => {
                   <h3 className="font-bold flex items-center gap-2">
                     <span className="w-2 h-2 rounded-full bg-yellow-500 shadow-[0_0_8px_rgba(234,179,8,0.5)]"></span>
                     Storyboard
-                    {script.scenes.some(s => s.assetUrl && s.assetType === 'video') && (
+                    {script.scenes?.some(s => s.assetUrl && s.assetType === 'video') && (
                       <span className="text-xs bg-green-500/20 text-green-400 px-2 py-0.5 rounded ml-2" title="Progress auto-saved">
                         💾 Saved
                       </span>
@@ -838,6 +891,13 @@ const App: React.FC = () => {
                       title="Toggle Voice Narration"
                     >
                       {script.useNarration ? 'Global Voice ON' : 'Global Voice OFF'}
+                    </button>
+                    <button
+                      onClick={() => setScript(prev => prev ? { ...prev, useExtendedScenes: !prev.useExtendedScenes } : null)}
+                      className={`text-xs px-2 py-0.5 rounded uppercase tracking-tighter transition ${script.useExtendedScenes ? 'bg-blue-500 text-white font-bold' : 'text-zinc-500 hover:text-white'}`}
+                      title="Extend each scene for ~2x duration during Full Render"
+                    >
+                      {script.useExtendedScenes ? 'Extended ON' : 'Extended OFF'}
                     </button>
                     <button
                       onClick={handleManualSave}
@@ -867,6 +927,89 @@ const App: React.FC = () => {
                       }}
                     />
                   </div>
+                </div>
+              </div>
+
+              {/* Character Gallery */}
+              <div className="bg-zinc-900/50 border border-white/10 rounded-2xl overflow-hidden backdrop-blur-sm shadow-xl">
+                <div className="p-6 border-b border-white/10 flex justify-between items-center">
+                  <h3 className="font-bold flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.5)]"></span>
+                    Character Gallery
+                  </h3>
+                  <button
+                    onClick={() => {
+                      const name = prompt("Enter character name:");
+                      if (!name) return;
+                      setScript(prev => {
+                        if (!prev) return null;
+                        const newChar: CharacterRef = {
+                          id: Math.random().toString(36).substr(2, 9),
+                          name,
+                          imageUrl: ''
+                        };
+                        return { ...prev, characters: [...(prev.characters || []), newChar] };
+                      });
+                    }}
+                    className="text-[10px] text-zinc-500 hover:text-white uppercase tracking-tighter transition"
+                  >
+                    Add Character
+                  </button>
+                </div>
+                <div className="p-6 space-y-4">
+                  {!script.characters || script.characters.length === 0 ? (
+                    <p className="text-xs text-zinc-600 italic">No reference images added yet. Images help maintain character consistency.</p>
+                  ) : (
+                    <div className="grid grid-cols-2 gap-3">
+                      {script.characters.map((char, charIdx) => (
+                        <div key={char.id} className="relative group/char bg-black/40 border border-white/5 rounded-xl p-2 flex flex-col items-center gap-2">
+                          <div className="w-16 h-16 rounded-full bg-zinc-800 border border-white/10 overflow-hidden flex items-center justify-center relative cursor-pointer"
+                            onClick={() => {
+                              const input = document.createElement('input');
+                              input.type = 'file';
+                              input.accept = 'image/*';
+                              input.onchange = (e) => {
+                                const file = (e.target as HTMLInputElement).files?.[0];
+                                if (!file) return;
+                                const reader = new FileReader();
+                                reader.onloadend = () => {
+                                  const base64 = reader.result as string;
+                                  setScript(prev => {
+                                    if (!prev || !prev.characters) return prev;
+                                    const newChars = [...prev.characters];
+                                    newChars[charIdx] = { ...newChars[charIdx], imageUrl: base64 };
+                                    return { ...prev, characters: newChars };
+                                  });
+                                };
+                                reader.readAsDataURL(file);
+                              };
+                              input.click();
+                            }}>
+                            {char.imageUrl ? (
+                              <img src={char.imageUrl} alt={char.name} className="w-full h-full object-cover" />
+                            ) : (
+                              <Upload size={16} className="text-zinc-500" />
+                            )}
+                            <div className="absolute inset-0 bg-black/60 opacity-0 hover:opacity-100 flex items-center justify-center transition">
+                              <Upload size={14} className="text-white" />
+                            </div>
+                          </div>
+                          <span className="text-[10px] font-bold text-zinc-400 truncate w-full text-center">{char.name}</span>
+                          <button
+                            onClick={() => {
+                              setScript(prev => {
+                                if (!prev || !prev.characters) return prev;
+                                return { ...prev, characters: prev.characters.filter(c => c.id !== char.id) };
+                              });
+                            }}
+                            className="absolute -top-1 -right-1 p-1 bg-zinc-900 border border-white/10 rounded-full text-zinc-600 hover:text-red-500 opacity-0 group-hover/char:opacity-100 transition"
+                          >
+                            <X size={10} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
