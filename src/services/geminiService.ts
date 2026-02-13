@@ -1,6 +1,6 @@
 import { GoogleGenAI } from "@google/genai";
 import { MODEL_TEXT, MODEL_IMAGE, getSystemPrompt, MODEL_VIDEO } from "../constants";
-import { VideoScript, Fact, VideoStyle, VideoEngine, MasterVideoResponse, R2Config, Persona, TrailerScript, AspectRatio, CharacterRef } from "../types";
+import { VideoScript, Fact, VideoStyle, VideoEngine, MasterVideoResponse, R2Config, Persona, TrailerScript, AspectRatio, CharacterRef, CastMember } from "../types";
 
 // Helper to strip data prefix from base64 strings
 const stripBase64 = (base64: string) => {
@@ -59,16 +59,53 @@ export const generateScript = async (topic: string, facts: string, apiKey?: stri
 export const generateTrailerScript = async (
   title: string,
   genre: string,
-  cast: { role: string; name: string }[],
+  cast: CastMember[],
   plot: string,
   apiKey?: string
 ): Promise<TrailerScript> => {
   const key = getGeminiKey(apiKey);
   if (!key) throw new Error("Gemini API Key is missing.");
 
-  const casting = cast.map(c => `${c.role}: ${c.name}`).join('\n');
-
   const ai = new GoogleGenAI({ apiKey: key });
+
+  // Step 1: Extract visual descriptions from reference images
+  const castDescriptions: Record<string, string> = {};
+  for (const member of cast) {
+    if (member.imageUrl) {
+      try {
+        // @ts-ignore
+        const result = await ai.models.generateContent({
+          model: MODEL_IMAGE,
+          contents: [{
+            role: 'user',
+            parts: [
+              { inlineData: { mimeType: 'image/png', data: stripBase64(member.imageUrl) } },
+              { text: `Describe this person's physical appearance in one concise sentence: facial features, hair color/style, skin tone, age range, and build. Be specific enough to identify them visually. Example: "A tall man in his late 20s with dark curly hair, sharp jawline, olive skin, and an athletic build."` }
+            ]
+          }]
+        });
+        // @ts-ignore
+        castDescriptions[member.name] = (result.text || '').trim();
+      } catch (err) {
+        console.warn(`Failed to describe cast member ${member.name}:`, err);
+      }
+    }
+  }
+
+  // Step 2: Build casting block with descriptions
+  const casting = cast.map(c => {
+    const desc = castDescriptions[c.name];
+    if (desc) {
+      return `${c.role}: Character "${c.name}" — Appearance: ${desc}`;
+    }
+    return `${c.role}: ${c.name}`;
+  }).join('\n');
+
+  // Step 3: Build the description lookup for the prompt
+  const descriptionGuide = Object.entries(castDescriptions).length > 0
+    ? `\n\nCHARACTER APPEARANCE GUIDE (use these descriptions in visual prompts instead of actor names):\n${Object.entries(castDescriptions).map(([name, desc]) => `- "${name}" → ${desc}`).join('\n')}`
+    : '';
+
   const response = await ai.models.generateContent({
     model: MODEL_TEXT,
     contents: `
@@ -78,6 +115,7 @@ export const generateTrailerScript = async (
         Plot: ${plot}
         Cast:
         ${casting}
+        ${descriptionGuide}
   
         Structure:
         1. Hook (0-5s): Intense visual, establishing shot.
@@ -86,7 +124,10 @@ export const generateTrailerScript = async (
         4. Title Card (30s+): Final impact.
   
         IMPORTANT:
-        - Visual Prompts MUST explicitly name the cast members (e.g. "Close up of [Actor Name]").
+        - Visual Prompts MUST describe each character by their PHYSICAL APPEARANCE, NOT by their actor name.
+          For example, instead of "Close up of Archie Madekwe", write "Close-up of a young man with dark curly hair, sharp jawline, and olive skin".
+        - Use the Character Appearance Guide above to get the right descriptions.
+        - If a character has no description, use a generic but vivid physical description fitting their role.
         - Keep it punchy and viral.
         - Return strictly JSON.
 
@@ -97,7 +138,7 @@ export const generateTrailerScript = async (
               "id": "1",
               "timestamp": "0s",
               "text": "Narration text...",
-              "visualPrompt": "Detailed visual description including camera angle and lighting..."
+              "visualPrompt": "Detailed visual description using CHARACTER APPEARANCE (not names), including camera angle and lighting..."
             }
           ],
           "hook": "Opening line",
@@ -107,23 +148,33 @@ export const generateTrailerScript = async (
       `,
     config: {
       responseMimeType: "application/json",
-      systemInstruction: "You are a Hollywood Trailer Editor. Create high-intensity scripts with visual prompts that star specific actors.",
+      systemInstruction: "You are a Hollywood Trailer Editor. Create high-intensity scripts with visual prompts that describe characters by their physical appearance, NOT by actor names. This is critical because the video AI models do not recognize actor names.",
     },
   });
 
   try {
     const data = JSON.parse(response.text || '{}');
-    // Enforce trailer metadata
+
+    // Step 4: Post-process — replace any remaining actor names with descriptions
+    const scenes = (data.scenes || []).map((scene: any) => {
+      let vp = scene.visualPrompt || '';
+      for (const [name, desc] of Object.entries(castDescriptions)) {
+        // Replace "Name" or "name" with the description
+        const regex = new RegExp(name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+        vp = vp.replace(regex, desc);
+      }
+      return { ...scene, visualPrompt: vp };
+    });
+
     return {
       ...data,
       title,
       genre,
       cast,
       plot,
-      // Ensure structure matches VideoScript for compatibility
       topic: title,
       intro: data.intro || data.hook || '',
-      scenes: data.scenes || [],
+      scenes,
       hook: data.hook || '',
       body: data.body || '',
       outro: data.outro || ''
