@@ -81,11 +81,34 @@ const App: React.FC = () => {
   const envGemini = process.env.GEMINI_API_KEY || process.env.API_KEY;
   const envKie = process.env.KIEAI_API_KEY;
 
-  // Load saved progress on mount
+  // Load saved progress and handle routing on mount
   useEffect(() => {
     checkApiKey(true);
     loadSavedProgress();
     loadArchives();
+
+    // Handle initial routing based on URL path
+    const path = window.location.pathname;
+    if (path === '/privacy') {
+      setCurrentStep(AppState.PRIVACY);
+    } else if (path === '/terms') {
+      setCurrentStep(AppState.TERMS);
+    }
+
+    // Listen for browser back/forward buttons
+    const handlePopState = (e: PopStateEvent) => {
+      const path = window.location.pathname;
+      if (path === '/privacy') {
+        setCurrentStep(AppState.PRIVACY);
+      } else if (path === '/terms') {
+        setCurrentStep(AppState.TERMS);
+      } else if (path === '/' || path === '') {
+        setCurrentStep(AppState.IDLE);
+      }
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
   // Handle Social OAuth Redirects
@@ -225,6 +248,10 @@ const App: React.FC = () => {
   const handleNavigate = (newState: AppState) => {
     if (newState === AppState.PRIVACY || newState === AppState.TERMS) {
       setLastStep(currentStep);
+      const path = newState === AppState.PRIVACY ? '/privacy' : '/terms';
+      window.history.pushState({ step: newState }, '', path);
+    } else if (newState === AppState.IDLE) {
+      window.history.pushState({}, '', '/');
     }
     setCurrentStep(newState);
     window.scrollTo({ top: 0, behavior: 'smooth' });
