@@ -3,11 +3,14 @@ import { RefreshCcw, Video, Mic, Edit2, Play, Volume2, Upload, X, ChevronLeft, C
 import Header from './components/Header';
 import Archives from './components/Archives';
 import TrailerInput from './components/TrailerInput';
+import Footer from './components/Footer';
+import LegalPage from './components/LegalPage';
 import { AppState, VideoScript, Fact, Scene, ArchiveItem, VideoStyle, VideoEngine, SocialMetadata, Persona, AppMode, CastMember, TrailerScript, AspectRatio, CharacterRef, AssetVersion } from './types';
 import * as gemini from './services/geminiService';
 import * as archiveService from './services/archiveService';
 import * as socialService from './services/socialService';
 import { PERSONAS } from './constants';
+import { PRIVACY_POLICY, TERMS_OF_SERVICE } from './constants/legal';
 
 // Helper: get the active asset URL and type from a scene's version history
 const getActiveAsset = (scene: Scene): { url?: string; type: 'image' | 'video'; taskId?: string } => {
@@ -23,6 +26,7 @@ const App: React.FC = () => {
   // ... (previous state declarations - lines 11-54 remain same, but I can't skip lines easily with replace_file_content unless I match context properly. I will try to match the top block first to update imports)
   // ... (previous state declarations)
   const [currentStep, setCurrentStep] = useState<AppState>(AppState.IDLE);
+  const [lastStep, setLastStep] = useState<AppState>(AppState.IDLE);
   const [appMode, setAppMode] = useState<AppMode>(AppMode.HISTORY);
 
   // ...
@@ -214,7 +218,16 @@ const App: React.FC = () => {
 
   const handleOpenArchives = () => {
     loadArchives();
+    setLastStep(currentStep);
     setCurrentStep(AppState.ARCHIVES);
+  };
+
+  const handleNavigate = (newState: AppState) => {
+    if (newState === AppState.PRIVACY || newState === AppState.TERMS) {
+      setLastStep(currentStep);
+    }
+    setCurrentStep(newState);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const handleLoadArchive = (item: ArchiveItem) => {
@@ -1423,6 +1436,24 @@ const App: React.FC = () => {
           </div>
         )}
       </main>
+
+      {currentStep === AppState.PRIVACY && (
+        <LegalPage
+          title="Privacy Policy"
+          content={PRIVACY_POLICY}
+          onBack={() => setCurrentStep(lastStep)}
+        />
+      )}
+
+      {currentStep === AppState.TERMS && (
+        <LegalPage
+          title="Terms of Service"
+          content={TERMS_OF_SERVICE}
+          onBack={() => setCurrentStep(lastStep)}
+        />
+      )}
+
+      <Footer onNavigate={handleNavigate} />
 
       {/* Settings Modal */}
       {showSettings && (

@@ -100,7 +100,9 @@ export enum AppState {
   SCRIPTING = 'SCRIPTING',
   ASSET_GEN = 'ASSET_GEN',
   PREVIEW = 'PREVIEW',
-  ARCHIVES = 'ARCHIVES'
+  ARCHIVES = 'ARCHIVES',
+  PRIVACY = 'PRIVACY',
+  TERMS = 'TERMS'
 }
 
 export interface Fact {
